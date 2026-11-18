@@ -1,0 +1,155 @@
+/*
+  File:    public/styles.css
+  Version: 1.2.0
+  Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
+  GPL-3.0-or-later. See LICENSE.
+*/
+
+:root {
+  --bg: #f4f5f2;
+  --card: #ffffff;
+  --ink: #1d2320;
+  --muted: #5f6a64;
+  --line: #dfe3dd;
+  --accent: #0f6b5c;
+  --accent-ink: #ffffff;
+  --danger: #b3261e;
+  --ok: #1e7a3c;
+  --radius: 10px;
+  --mono: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141816;
+    --card: #1d2320;
+    --ink: #e7ebe8;
+    --muted: #9aa59f;
+    --line: #2e3632;
+    --accent: #3fb59d;
+    --accent-ink: #0b1210;
+    --danger: #ef6f66;
+    --ok: #5fcf85;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, "Noto Sans", sans-serif;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.brand { display: flex; gap: 10px; align-items: center; font-weight: 650; }
+.brand-mark {
+  width: 14px; height: 22px; border-radius: 4px;
+  background: linear-gradient(var(--accent) 60%, var(--danger) 60%);
+}
+
+main { max-width: 980px; margin: 0 auto; padding: 24px; display: grid; gap: 16px; }
+#connected { display: grid; gap: 16px; }
+#connected[hidden], [hidden] { display: none !important; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.card h2 { margin: 0 0 6px; font-size: 16px; }
+.empty { text-align: center; padding: 56px 20px; }
+.empty h1 { margin: 0 0 8px; font-size: 22px; }
+
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+
+.identity { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.label { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.serial { font: 600 30px/1.2 var(--mono); letter-spacing: .02em; margin: 2px 0 4px; }
+
+.muted { color: var(--muted); margin: 0 0 14px; }
+code { font-family: var(--mono); font-size: .92em; }
+
+.facts {
+  display: grid; margin: 12px 0 0; gap: 12px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.facts div { border-top: 1px solid var(--line); padding-top: 8px; }
+.facts dt { font-size: 12px; color: var(--muted); }
+.facts dd { margin: 2px 0 0; font-family: var(--mono); font-size: 14px; }
+
+.pill { font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); }
+.pill-on { color: var(--ok); border-color: currentColor; }
+.pill-off { color: var(--muted); }
+.pill-warn { color: var(--danger); border-color: currentColor; }
+
+.btn {
+  font: inherit; font-weight: 600; cursor: pointer;
+  border-radius: 8px; padding: 8px 16px; border: 1px solid transparent;
+}
+.btn:disabled { opacity: .55; cursor: progress; }
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+.btn-link {
+  background: none; border: 0; padding: 0; color: var(--accent);
+  font: inherit; font-weight: 600; cursor: pointer;
+}
+
+.inline-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+select {
+  font: inherit; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+}
+
+.result { min-height: 1.5em; margin: 10px 0 0; font-size: 14px; }
+.result.ok { color: var(--ok); }
+.result.err { color: var(--danger); }
+
+/* Shown in the Status card when the logger is not stopped. */
+.banner-warn {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.danger-zone { border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); }
+
+.file-list { list-style: none; margin: 0; padding: 0; }
+.file-list li {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.file-list .name { font-family: var(--mono); font-size: 14px; overflow-wrap: anywhere; }
+.file-list .actions { display: flex; gap: 14px; white-space: nowrap; }
+.file-list a { color: var(--accent); font-weight: 600; text-decoration: none; }
+
+.viewer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+#pdf-viewer { width: 100%; height: 75vh; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+
+dialog {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--card); color: var(--ink); max-width: 420px; padding: 24px;
+}
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+dialog h2 { margin-top: 0; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); border: 0;
+}

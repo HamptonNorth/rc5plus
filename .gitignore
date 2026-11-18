@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Exported readings and copies of logger reports (personal data)
+exports/
+
+# Logs and local environment
+*.log
+.env
+.env.*
+
+# Editor and OS clutter
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Personal Claude Code settings (shared settings in .claude/settings.json are kept)
+.claude/settings.local.json

@@ -1,0 +1,164 @@
+<!--
+  File:    CLAUDE.md
+  Version: 1.2.1
+  Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
+  Purpose: Handover context for Claude Code (Zed agent panel / CLI)
+-->
+
+# CLAUDE.md — rc5plus-app
+
+## What this is
+
+A Bun + Hono web app for one device only: the **Elitech RC-5+** USB temperature logger (VID `04d8`, PID `3005`). It runs on Linux and talks to the logger directly through `/dev/hidrawN`, with no ElitechLog, Windows VM or Python. The UI binds to `127.0.0.1:3005`.
+
+Features:
+1. Detect the logger and show its serial number and status
+2. Reset for a new trip: set interval (1–15 min) + clock, erase records, verify. On this firmware a settings change can't be made without erasing, so this is one action (user's decision, 2026-11-18)
+3. View and download the PDF from the logger's USB mass-storage drive
+4. Export all records to CSV (sent to the browser, with a copy saved in `exports/`)
+
+## Status
+
+- v1.2.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
+- 245 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
+- Hardware verification checklist (README "First run on a real logger"):
+  - [x] Serial number and record count match the logger and the PDF (2026-11-18)
+  - [x] CSV rows match the logger's own CSV report exactly (2026-11-18, 4 rows)
+  - [x] Reset: write interval + configuration time → Format → 0 records, interval and clock as written, state `0x04` (2026-11-18, via `/api/reset`)
+  - [ ] Starting a trip after a reset and reading the new records (not yet done)
+
+## Commands
+
+```bash
+bun install
+bun start            # real hardware, http://127.0.0.1:3005
+bun run dev          # --watch
+bun run mock         # RC5_MOCK=1, simulated logger, no hardware needed
+bun test             # protocol vectors + simulator tests
+bun run vectors      # regenerate test/vectors.json (needs ../python-elitech clone)
+```
+
+Env: `PORT` (3005), `HOST` (127.0.0.1), `RC5_MOCK=1`, `RC5_MOCK_STATE=recording|ready`.
+
+udev: `60-elitech-rc5plus.rules` → `/etc/udev/rules.d/`, using `TAG+="uaccess"`. Without it, opening the device fails with an EACCES error and the API returns 403.
+
+## Layout
+
+```
+src/
+  server.js                 Hono routes + static UI, error → HTTP mapping
+  elitech/
+    constants.js            VID/PID, report size, op codes, limits
+    frame.js                buildFrame / parseResponse (strict validation)
+    parameters.js           memory map subset, decodeInfo, encoders
+    records.js              8-byte packed record decoder (BigInt)
+    hidraw.js               sysfs discovery + non-blocking /dev/hidraw I/O
+    rc5plus.js              readInfo / resetForNewTrip / readRecords
+    mock-device.js          simulated RC-5+ (tests + RC5_MOCK) and fake PDF drive
+  lib/
+    logger-service.js       driver selection, one-HID-session-at-a-time queue
+    usb-drive.js            sysfs → /dev/sdX → /proc/self/mounts → udisksctl mount
+    csv.js                  RFC 4180 CSV, file naming
+public/                     index.html, app.js (vanilla JS), styles.css
+test/
+  gen_vectors.py            builds vectors.json from python-elitech (stubs hid_parser)
+  vectors.json              reference vectors — do not hand-edit
+  protocol.test.js          JS port vs python-elitech
+  rc5plus.test.js           high-level ops + CSV against the simulator
+60-elitech-rc5plus.rules    udev rule
+```
+
+## API
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/status` | sysfs scan only, no USB traffic. The UI polls it every 2.5 s |
+| GET | `/api/info` | 3 GetParameter frames |
+| POST | `/api/reset` | `{ minutes: 1..15, confirm: true }`. Sets interval + clock, erases records |
+| GET | `/api/export.csv` | headers `X-Record-Count`, `X-Saved-As` |
+| GET | `/api/pdfs` | `{ mountPoint, files[], reason? }` |
+| GET | `/api/pdfs/:name` | `?download=1` for attachment. The name must be in the listing (prevents path traversal) |
+
+Error mapping in `server.js`: NotConnected → 404, NotStopped → 409 (`NOT_STOPPED`), NotApplied → 502 (`NOT_APPLIED`), RangeError → 400, Transport EACCES → 403, other Transport errors → 503, FrameError → 502.
+
+## Protocol (from python-elitech)
+
+- HID reports are 64 bytes in and 64 out, unnumbered. Write the frame directly, zero-padded. Its first byte is `0x33` (non-zero), so the kernel sends all 64 bytes.
+- Frame layout: `33 CC 00 len opLo opHi 00 off[15:8] off[7:0] off[23:16] count payload… sum&0xFF`. `len` includes the checksum byte. Maximum payload is 52 bytes.
+- Op codes: GetRecord `0x0001`, GetParameter `0x0003`, SetParameter `0x0004`, Format `0x02C0`, Stop `0x03C0`. The answer echoes only the low byte at index 4.
+- A 1-byte GetParameter is widened to `(offset-1, 2)`. Keep this so the requests stay identical to the tested library.
+- SetParameter answer: count = 1, payload byte `1` = "accepted". **On protocol `0x38` this doesn't mean the value was kept.** Writes are held until a Format follows; the Format commits them and also erases all records. A Format on its own, or before the writes, changes nothing. Confirmed on hardware 2026-11-18; matches python-elitech issue #1 (RC-5+ V5.2, protocol `0x38`). Unconfirmed: whether pending writes survive an unplug.
+- Stop/Format: payload is a single `0x00`. The answer is only header-checked (python-elitech doesn't interpret it). Format timeout is 10 s.
+- Parameter memory is big-endian. Key offsets:
+  - `0x02` serial number (12 bytes, ASCII)
+  - `0x1F` firmware version
+  - `0x21` bit 3: °F
+  - `0x24` time zone (12-byte block: hours in byte 0, minutes in byte 11)
+  - `0x27` battery level (low nibble)
+  - `0x25` run state (see Gotchas), `0x26` bits 0..2 how it stopped
+  - `0x28` configuration time (writing it, then Format, sets the clock; the clock reads the old value for up to ~3 s)
+  - `0x30` start time, `0x38` stop time
+  - `0x42` capacity (dword)
+  - `0x48` record count (word)
+  - `0x4C` interval (word, units of 10 s)
+  - `0x88` device time
+  - `0x95` protocol version
+- Date/times are 7 bytes `[yy, mm, dow, dd, hh, mi, ss]` (dow 0 = Sunday, ignored on read), local wall-clock time with no zone. We write the real day of the week, as the official software does.
+- Records are 8-byte little-endian 64-bit words, read 6 per frame:
+  - bits 63..54 humidity, 53..48 minute, 47..37 temperature (tenths, magnitude), 36..32 hour, 31..27 day, 26..23 month, 22..16 year−2000, 15..10 second
+  - bit 9 is temperature bit 10 when protocol ≥ `0x23`
+  - bits 7..0 are flags: Mark 0x01, Pause 0x02, Stop 0x04, Sign1 0x08 (negative temperature), Error 0x80
+  - All `0xFF` means an empty slot.
+
+## Design decisions (keep unless told otherwise)
+
+- **No native addons.** hidraw is opened `O_RDWR | O_NONBLOCK` and polled every 5 ms with a deadline, so the event loop never blocks. `drain()` runs before each write to drop stale reports. Don't swap in `node-hid`.
+- **One HID session at a time.** `LoggerService.withLogger()` chains every operation on a promise queue, and opens and closes the fd per session so replugging needs no restart.
+- **Strict response validation.** Throw on any mismatch of header, op, offset, count or checksum (python-elitech only warns).
+- **Write only the fields being changed.** Reset writes 2 bytes at `0x4C` and 7 at `0x28`, then Format. Don't do the official software's "write all ranges" compat mode: partial write + Format works on this firmware. python-elitech PR #12/#14 (full-block write incl. `0x13C`, write → Format → write again) is the fallback if a future firmware needs it.
+- **One reset operation.** Since any settings change erases the records, `resetForNewTrip(minutes)` is the only write operation (`POST /api/reset`). There is no separate set-interval or clear.
+- **Change settings only when stopped or ready.** `resetForNewTrip` calls `assertConfigurable()` first and throws `NotStoppedError` unless `runState` is `stopped` (`0x09`) or `ready` (`0x04`). Recording, start delay and unknown states are refused, not guessed. The user stops the logger with its own button. Reading is allowed in any state.
+- **Never send USB Stop.** On real hardware a Stop (`0x03C0`) makes the logger drop off USB and re-enumerate about 1 s later. The next write then fails with `EPROTO`, so the rest of the session is lost.
+- **Reset always verifies** record count 0, interval and configuration time as written, and the clock within 10 s (polled for up to 10 s while it settles). Mismatch → `NotAppliedError`.
+- **Localhost only.** There is no auth, so don't default to `0.0.0.0`.
+- Plain JavaScript (ESM) with JSDoc, not TypeScript. Vanilla front end, no framework or build step.
+- Linux only (`"os": ["linux"]`).
+
+## Conventions
+
+- Every file starts with a header block: `File`, `Version`, `Project`, purpose, and the licence line. Bump `Version` on every change.
+- Files ported from python-elitech keep the "Derived from python-elitech … GPL-3.0-or-later" note.
+- Comment thoroughly and prefer readable code over concise code.
+- When proposing changes, give complete, copy-paste-ready files rather than fragments.
+- Use GitHub-flavoured Markdown in docs.
+- When giving commands, label the target host (for example "Run on Kubuntu-WS").
+- British English in UI text, with `en-GB` number formatting.
+
+## Licence
+
+**GPL-3.0-or-later**, because the protocol is ported from python-elitech (© 2023 Pascal Combes). Any new protocol code keeps this licence.
+
+## Gotchas
+
+- After Clear, the host's cached view of the mass-storage FAT can be stale. The UI tells the user to replug.
+- The PDF only appears or updates when recording stops. An empty drive is normal mid-trip.
+- `allow-cycle` and the `csv` parameter bits don't work on the RC-5+ (per python-elitech). Don't build features on them.
+- `deviceState` (0x25) isn't decoded in python-elitech master. Values: `0x04` configured/ready (seen after reset), `0x05` start delay (from python-elitech issue #1, not seen here), `0x07` recording (display "Rec"), `0x09` stopped (display "Stop"). While plugged in the display always shows "USB", whatever the state, so the user must unplug the logger to stop it and to see its state. These are decoded as `runState`. Add any new value to `DeviceState` in `parameters.js` once it has been confirmed on hardware.
+- `0x26` bits 0..2 = how it stopped: `0` button, `3` paused for USB (still recording), `4` USB Stop command. The logger doesn't sample while connected to USB.
+- The RC-5+ answers SetParameter "accepted" even when it doesn't keep the write (see Protocol). Always read back, after the Format.
+- Record layout: python-elitech PR #13 says protocol ≥ `0x30` uses a new record layout. Not true for this RC-5+: the old layout decodes `0x38` records correctly (checked against the logger's own CSV).
+- Pressing stop on an already stopped logger leaves `0x25` at `0x09`. The display shows "pdf C" and the logger writes `<serial>-<trip>.csv` next to the PDF on its drive. That CSV has a trip summary (start/stop times, interval, stop mode) and the readings. The app's PDF panel lists only `*.pdf`.
+- Starting a new trip with the button discards the previous records (14 → 4 seen during testing).
+- Start time (`0x30`) and stop time (`0x38`) stayed at the 2012-01-01 placeholder on this firmware, even across a start/stop.
+- Don't run two processes against the hidraw node at once: their answers get mixed up (`Answer offset … does not match`).
+- `RC5_MOCK_STATE=recording` (or `ready`) starts the simulator in that state, to try out the state checks. The simulator holds writes until a Format, like the hardware.
+- References: python-elitech issue #1 (RC-5+ writes ignored), PRs #12–#14 by honx (full config write, reset sequence, `doc/RC-5.md` protocol notes from the official software).
+- Interval changes take effect from the next recording start.
+- Bun's `serveStatic` root is resolved relative to cwd. `server.js` computes it from `import.meta.dir`, so `bun start` works from any directory.
+
+## Possible next steps
+
+- Show a chart of readings in the UI (data is already available from `readRecords`)
+- Start mode / start delay controls (`0x20` bits 0..2, `0x40`)
+- Alarm thresholds (offsets not yet mapped in `parameters.js`; see the upstream table)
+- Optional SQLite archive of exports per serial number (matches the usual Bun + Hono + SQLite stack)

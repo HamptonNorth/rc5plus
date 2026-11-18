@@ -1,0 +1,19 @@
+# =============================================================================
+# File:    60-elitech-rc5plus.rules
+# Version: 1.0.0
+# Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
+#
+# Gives the logged-in desktop user read/write access to the RC-5+ HID node
+# (/dev/hidrawN), so the app runs without sudo.
+#
+# Install (run on the Linux PC the logger plugs into):
+#   sudo cp 60-elitech-rc5plus.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   then unplug and replug the logger.
+#
+# Based on 60-elitech.rules from python-elitech (GPL-3.0-or-later),
+# narrowed to the RC-5+ only and using systemd's "uaccess" tag instead of the
+# dialout group.
+# =============================================================================
+
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="3005", TAG+="uaccess"

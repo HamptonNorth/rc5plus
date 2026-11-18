@@ -1,0 +1,112 @@
+<!doctype html>
+<!--
+  File:    public/index.html
+  Version: 1.2.0
+  Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
+  GPL-3.0-or-later. See LICENSE.
+-->
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RC-5+ Logger</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>RC-5+ Logger</span>
+    </div>
+    <div id="connection" class="pill pill-off" role="status">Checking…</div>
+  </header>
+
+  <main>
+    <!-- Shown when nothing is plugged in -->
+    <section id="empty" class="card empty" hidden>
+      <h1>No logger connected</h1>
+      <p>Plug the Elitech RC-5+ into a USB port. This page updates by itself.</p>
+    </section>
+
+    <!-- Shown when a logger is connected -->
+    <div id="connected" hidden>
+      <section class="card identity">
+        <div>
+          <div class="label">Serial number</div>
+          <div id="serial" class="serial">—</div>
+          <div id="model-line" class="muted">—</div>
+        </div>
+        <button id="refresh" class="btn btn-ghost" type="button">Refresh</button>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <p id="state-warning" class="banner-warn" role="alert" hidden></p>
+        <dl class="facts">
+          <div><dt>State</dt><dd id="run-state">—</dd></div>
+          <div><dt>Records</dt><dd id="records">—</dd></div>
+          <div><dt>Interval</dt><dd id="interval">—</dd></div>
+          <div><dt>Device clock</dt><dd id="device-time">—</dd></div>
+          <div><dt>Time zone</dt><dd id="timezone">—</dd></div>
+          <div><dt>Recording started</dt><dd id="start-time">—</dd></div>
+          <div><dt>Recording stopped</dt><dd id="stop-time">—</dd></div>
+          <div><dt>Last configured</dt><dd id="config-time">—</dd></div>
+          <div><dt>Battery</dt><dd id="battery">—</dd></div>
+        </dl>
+      </section>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Export data</h2>
+          <p class="muted">Downloads every stored reading as a CSV file. A copy is also saved in the app's <code>exports/</code> folder.</p>
+          <button id="export-csv" class="btn btn-primary" type="button">Download CSV</button>
+          <p id="export-result" class="result" aria-live="polite"></p>
+        </section>
+
+        <section class="card">
+          <h2>PDF report</h2>
+          <p class="muted">The report the logger generates on its USB drive.</p>
+          <ul id="pdf-list" class="file-list"></ul>
+          <p id="pdf-result" class="result" aria-live="polite"></p>
+        </section>
+      </div>
+
+      <section class="card danger-zone">
+        <h2>Reset for a new trip</h2>
+        <p class="muted">
+          Sets the logging interval and the logger's clock, and <strong>erases all stored readings</strong>.
+          The RC-5+ only accepts new settings together with an erase, so these always go together.
+          The logger must be stopped first. Download the CSV before you reset.
+        </p>
+        <form id="reset-form" class="inline-form">
+          <label for="interval-select">Interval</label>
+          <select id="interval-select"></select>
+          <button id="reset-open" class="btn btn-danger" type="submit">Reset logger…</button>
+        </form>
+        <p id="reset-result" class="result" aria-live="polite"></p>
+      </section>
+
+      <section id="pdf-viewer-card" class="card" hidden>
+        <div class="viewer-head">
+          <h2 id="pdf-viewer-title">Report</h2>
+          <button id="pdf-close" class="btn btn-ghost" type="button">Close</button>
+        </div>
+        <iframe id="pdf-viewer" title="PDF report"></iframe>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="reset-dialog">
+    <form method="dialog">
+      <h2>Reset the logger?</h2>
+      <p>This erases <strong id="reset-count">all</strong> readings from logger <strong id="reset-serial"></strong>. It cannot be undone.</p>
+      <p>The interval is set to <strong id="reset-interval"></strong> and the clock to this computer's time.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn btn-ghost">Cancel</button>
+        <button value="confirm" class="btn btn-danger">Erase and reset</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
