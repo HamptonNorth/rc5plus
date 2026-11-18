@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.2.0
+  Version: 1.3.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -97,9 +97,31 @@ Browser ──HTTP──▶ Hono (src/server.js)
 | GET | `/api/status` | | `{ connected, devPath, mock }` |
 | GET | `/api/info` | | Serial number, settings, record count, clock |
 | POST | `/api/reset` | `{ "minutes": 1..15, "confirm": true }` | Info after reset (0 records), `409 NOT_STOPPED` or `502 NOT_APPLIED` |
+
+Any request that talks to the logger answers `423 BUSY` if another program (such as `bun run dump`) holds the device lock for more than 20 s.
 | GET | `/api/export.csv` | | CSV download (copy saved in `exports/`) |
 | GET | `/api/pdfs` | | PDFs on the logger's drive |
 | GET | `/api/pdfs/:name` | `?download=1` | The PDF, inline or as an attachment |
+
+## Diagnostic dump
+
+`bun run dump` prints a read-only snapshot of the connected logger: USB details, the files on its drive, a hex dump of its settings memory (`0x000`–`0x154`) with every known field decoded, and the unmapped bytes that hold data. Run it on the PC the logger is plugged into.
+
+| Command | Does |
+|---|---|
+| `bun run dump` | Snapshot to the terminal |
+| `bun run dump --save` | Also writes `dumps/<serial>-<time>.json` |
+| `bun run dump --shadow` | Also reads the second "shadow" memory space (operation `0x05`), which holds the real trip start/stop times and record count |
+| `bun run dump --records[=N]` | Also reads records with their raw bytes: all, or the first and last N |
+| `bun run dump --redact` | Blanks the serial number, description, PDF password and device name, for sharing (e.g. in an upstream issue) |
+| `bun run dump --watch[=SECONDS]` | Re-reads every few seconds (default 3) and prints only the bytes that change, labelled with field names. Handles unplug/replug |
+| `bun run dump --diff A.json B.json` | Compares two saved dumps byte by byte |
+| `bun run dump --device /dev/hidrawN` | Picks a logger when several are plugged in |
+| `bun run dump --show-password` | Shows the PDF password, which is masked by default |
+
+The dump **never writes to the logger**: it can only send read requests, and anything else is refused before it reaches the device. It doesn't mount the drive either. It shares a lock with the app, so the two never talk to the logger at the same time; if the app is busy, the dump waits.
+
+Saved dumps are only readable by you and are kept out of git (`dumps/`). They contain the serial number and description, and the PDF password if one is set, so use `--redact` before sharing one.
 
 ## CSV format
 
@@ -118,6 +140,8 @@ index,timestamp,temperature_c,marked,event
 git clone https://github.com/pasccom/python-elitech ../python-elitech
 bun run vectors
 bun test
+
+# Includes tests for the dump's read-only guard, redaction, diff and the device lock.
 ```
 
 ## Licence

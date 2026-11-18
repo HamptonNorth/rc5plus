@@ -1,12 +1,14 @@
 // =============================================================================
 // File:    src/lib/logger-service.js
-// Version: 1.2.0
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Owns access to the logger:
 //   - detection (cheap sysfs scan, no USB traffic)
 //   - one-at-a-time HID sessions, so two browser requests can never
-//     interleave frames on the same device
+//     interleave frames on the same device; on real hardware each session
+//     also takes the cross-process lock (device-lock.js), so other tools
+//     such as `bun run dump` never talk to the logger at the same time
 //   - the real hidraw driver, or the simulator when RC5_MOCK=1
 //     (RC5_MOCK_STATE=recording or =ready starts the simulator in that
 //     state instead of stopped, to try out the "logger must be stopped" checks)
@@ -21,6 +23,7 @@ import {
   MockTransport,
 } from "../elitech/mock-device.js";
 import { Rc5Plus } from "../elitech/rc5plus.js";
+import { acquireDeviceLock } from "./device-lock.js";
 import { listPdfs, locateDrive } from "./usb-drive.js";
 
 /**
@@ -34,11 +37,18 @@ export class NotConnectedError extends Error {
 }
 
 /**
+ * How long a server request waits for another program (e.g. a dump) to
+ * finish with the logger before giving up with "busy".
+ */
+const LOCK_TIMEOUT_MS = 20_000;
+
+/**
  * Real hardware: hidraw for commands, mass storage for the PDF.
  */
 function hardwareDriver() {
   return {
     mock: false,
+    lock: () => acquireDeviceLock("rc5plus server", { timeoutMs: LOCK_TIMEOUT_MS }),
     find: () => findRc5PlusDevices(),
     open: (device) => HidrawTransport.open(device.devPath),
     locateDrive: (device) => locateDrive(device.usbDir),
@@ -61,6 +71,7 @@ function mockDriver() {
 
   return {
     mock: true,
+    lock: null, // in-process simulator: the session queue is enough
     find: () => [device],
     open: () => new MockTransport(logger),
     locateDrive: async () => ({ mountPoint: drive }),
@@ -107,11 +118,16 @@ export class LoggerService {
       if (!device) {
         throw new NotConnectedError();
       }
-      const transport = this.driver.open(device);
+      const release = this.driver.lock ? await this.driver.lock() : () => {};
       try {
-        return await fn(new Rc5Plus(transport), device);
+        const transport = this.driver.open(device);
+        try {
+          return await fn(new Rc5Plus(transport), device);
+        } finally {
+          transport.close();
+        }
       } finally {
-        transport.close();
+        release();
       }
     };
 

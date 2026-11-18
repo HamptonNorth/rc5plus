@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/frame.js
-// Version: 1.0.0
+// Version: 1.1.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Building request frames and parsing response frames.
@@ -154,7 +154,7 @@ function frameOffset(frame) {
  * @param {number} count       The request's count (bytes or records).
  * @param {Uint8Array} answer  Raw 64-byte input report.
  * @returns {Uint8Array|boolean}
- *   - GetParameter: exactly `count` bytes starting at `offset`
+ *   - GetParameter / GetParameterShadow: exactly `count` bytes from `offset`
  *   - GetRecord:    exactly `count * 8` bytes of record data
  *   - SetParameter: true if the device accepted the write
  */
@@ -213,7 +213,8 @@ export function parseResponse(op, offset, count, answer) {
     return answer.slice(FRAME_PAYLOAD_INDEX, FRAME_PAYLOAD_INDEX + bytes);
   }
 
-  // GetParameter: strip the extra leading byte added by correctRange().
+  // GetParameter (or the shadow read): strip the extra leading byte that
+  // correctRange() adds to 1-byte GetParameter reads (none for shadow).
   const skip = offset - corrected.offset;
   if (answer.length < FRAME_PAYLOAD_INDEX + corrected.count) {
     throw new FrameError("Answer does not contain all data");

@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/server.js
-// Version: 1.2.0
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Hono HTTP server: JSON API for the logger plus the static web UI.
@@ -33,6 +33,7 @@ import { LoggerService, NotConnectedError } from "./lib/logger-service.js";
 import { TransportError } from "./elitech/hidraw.js";
 import { FrameError } from "./elitech/frame.js";
 import { NotAppliedError, NotStoppedError } from "./elitech/rc5plus.js";
+import { DeviceBusyError } from "./lib/device-lock.js";
 
 const PORT = Number(process.env.PORT ?? 3005);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -58,6 +59,10 @@ app.onError((err, c) => {
       { error: err.message, code: "NOT_STOPPED", runState: err.runState, deviceState: err.deviceState },
       409,
     );
+  }
+  if (err instanceof DeviceBusyError) {
+    // 423 Locked: another program (e.g. `bun run dump`) is using the logger.
+    return c.json({ error: err.message, code: "BUSY" }, 423);
   }
   if (err instanceof NotAppliedError) {
     // 502: the logger answered, but did not do what it acknowledged.

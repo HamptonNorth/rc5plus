@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/mock-device.js
-// Version: 1.2.0
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // A simulated RC-5+ that speaks the same frame protocol as the real logger.
@@ -19,6 +19,8 @@
 //     sets the clock.
 //   - While recording, writes are acknowledged and thrown away.
 //   - A USB Stop marks the stop mode as "software".
+//   - The shadow space (op 0x05) only models the 2-byte record count at
+//     0x84, as seen on a real RC-5+; everything else is zero.
 //
 // GPL-3.0-or-later. See LICENSE.
 // =============================================================================
@@ -123,6 +125,8 @@ export class MockRc5Plus {
     this.log = []; // every request frame received, for tests
     /** @type {Array<{offset: number, bytes: Uint8Array}>} writes awaiting a Format */
     this.pending = [];
+    /** Second "shadow" memory space read by op 0x05 (layout is a guess). */
+    this.shadow = new Uint8Array(0x200);
     /** Device clock minus real time, in ms (changed by a committed config time). */
     this.clockOffsetMs = 0;
 
@@ -186,6 +190,7 @@ export class MockRc5Plus {
   syncRecordCount() {
     const n = this.records.length;
     this.memory.set([(n >> 8) & 0xff, n & 0xff], Param.recordNumber.offset);
+    this.shadow.set([(n >> 8) & 0xff, n & 0xff], 0x84);
   }
 
   /** Keep the device clock parameter current. */
@@ -235,6 +240,9 @@ export class MockRc5Plus {
     switch (op) {
       case Operation.GetParameter:
         return responseFrame(op & 0xff, offset, count, this.memory.slice(offset, offset + count));
+
+      case Operation.GetParameterShadow:
+        return responseFrame(op & 0xff, offset, count, this.shadow.slice(offset, offset + count));
 
       case Operation.SetParameter:
         // Like the real logger: always acknowledge. Hold the write until a

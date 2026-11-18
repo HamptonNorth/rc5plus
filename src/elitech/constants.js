@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/constants.js
-// Version: 1.0.0
+// Version: 1.1.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Protocol constants for the Elitech RC-5+ USB HID interface.
@@ -48,11 +48,17 @@ export const MAX_FRAME_PAYLOAD = 52;
 
 /**
  * Operation codes (16-bit, sent little-endian in bytes 4..5 of the frame).
+ *
+ * GetParameterShadow reads a second "shadow" memory space (record count at
+ * 0x85, per python-elitech PR #14 doc/RC-5.md, found on an RC-5). Read only
+ * as far as is known, unconfirmed on the RC-5+, and used only by the
+ * diagnostic dump (`bun run dump --shadow`).
  */
 export const Operation = Object.freeze({
   GetRecord: 0x0001,
   GetParameter: 0x0003,
   SetParameter: 0x0004,
+  GetParameterShadow: 0x0005,
   Format: 0x02c0,
   Stop: 0x03c0,
 });

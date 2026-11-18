@@ -1,6 +1,6 @@
 <!--
   File:    CLAUDE.md
-  Version: 1.2.1
+  Version: 1.3.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   Purpose: Handover context for Claude Code (Zed agent panel / CLI)
 -->
@@ -19,8 +19,8 @@ Features:
 
 ## Status
 
-- v1.2.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
-- 245 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
+- v1.3.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
+- 264 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
 - Hardware verification checklist (README "First run on a real logger"):
   - [x] Serial number and record count match the logger and the PDF (2026-11-18)
   - [x] CSV rows match the logger's own CSV report exactly (2026-11-18, 4 rows)
@@ -36,6 +36,7 @@ bun run dev          # --watch
 bun run mock         # RC5_MOCK=1, simulated logger, no hardware needed
 bun test             # protocol vectors + simulator tests
 bun run vectors      # regenerate test/vectors.json (needs ../python-elitech clone)
+bun run dump         # read-only diagnostic snapshot (--save --shadow --records[=N] --redact --watch[=S] --diff A B)
 ```
 
 Env: `PORT` (3005), `HOST` (127.0.0.1), `RC5_MOCK=1`, `RC5_MOCK_STATE=recording|ready`.
@@ -59,12 +60,17 @@ src/
     logger-service.js       driver selection, one-HID-session-at-a-time queue
     usb-drive.js            sysfs → /dev/sdX → /proc/self/mounts → udisksctl mount
     csv.js                  RFC 4180 CSV, file naming
+    device-lock.js          cross-process lock file for the hidraw node (server + dump)
+    dump.js                 read-only snapshot, field table, redaction, diff, text output
+scripts/
+  dump.js                   `bun run dump` CLI (read-only; takes the device lock)
 public/                     index.html, app.js (vanilla JS), styles.css
 test/
   gen_vectors.py            builds vectors.json from python-elitech (stubs hid_parser)
   vectors.json              reference vectors — do not hand-edit
   protocol.test.js          JS port vs python-elitech
   rc5plus.test.js           high-level ops + CSV against the simulator
+  dump.test.js              read-only guard, dump, redaction, diff, device lock
 60-elitech-rc5plus.rules    udev rule
 ```
 
@@ -79,13 +85,14 @@ test/
 | GET | `/api/pdfs` | `{ mountPoint, files[], reason? }` |
 | GET | `/api/pdfs/:name` | `?download=1` for attachment. The name must be in the listing (prevents path traversal) |
 
-Error mapping in `server.js`: NotConnected → 404, NotStopped → 409 (`NOT_STOPPED`), NotApplied → 502 (`NOT_APPLIED`), RangeError → 400, Transport EACCES → 403, other Transport errors → 503, FrameError → 502.
+Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, another program holds the device lock), NotStopped → 409 (`NOT_STOPPED`), NotApplied → 502 (`NOT_APPLIED`), RangeError → 400, Transport EACCES → 403, other Transport errors → 503, FrameError → 502.
 
 ## Protocol (from python-elitech)
 
 - HID reports are 64 bytes in and 64 out, unnumbered. Write the frame directly, zero-padded. Its first byte is `0x33` (non-zero), so the kernel sends all 64 bytes.
 - Frame layout: `33 CC 00 len opLo opHi 00 off[15:8] off[7:0] off[23:16] count payload… sum&0xFF`. `len` includes the checksum byte. Maximum payload is 52 bytes.
-- Op codes: GetRecord `0x0001`, GetParameter `0x0003`, SetParameter `0x0004`, Format `0x02C0`, Stop `0x03C0`. The answer echoes only the low byte at index 4.
+- Op codes: GetRecord `0x0001`, GetParameter `0x0003`, SetParameter `0x0004`, GetParameterShadow `0x0005` (dump only), Format `0x02C0`, Stop `0x03C0`. The answer echoes only the low byte at index 4.
+- Shadow space (op `0x0005`, from python-elitech PR #14): answers on the RC-5+ (2026-11-18). Tentative layout from one dump: `0x01` start time, `0x08` first record time, `0x12` last record time (7-byte dates; the main space's `0x30`/`0x38` only hold the 2012 placeholder), `0x84` record count (word; PR #14 says `0x85` on an RC-5), `0x8B..0x8E` a counter that goes up once a second. Main space `0xFD` holds the "Mode Code" (`TLC30A08B`).
 - A 1-byte GetParameter is widened to `(offset-1, 2)`. Keep this so the requests stay identical to the tested library.
 - SetParameter answer: count = 1, payload byte `1` = "accepted". **On protocol `0x38` this doesn't mean the value was kept.** Writes are held until a Format follows; the Format commits them and also erases all records. A Format on its own, or before the writes, changes nothing. Confirmed on hardware 2026-11-18; matches python-elitech issue #1 (RC-5+ V5.2, protocol `0x38`). Unconfirmed: whether pending writes survive an unplug.
 - Stop/Format: payload is a single `0x00`. The answer is only header-checked (python-elitech doesn't interpret it). Format timeout is 10 s.
@@ -120,6 +127,8 @@ Error mapping in `server.js`: NotConnected → 404, NotStopped → 409 (`NOT_STO
 - **Change settings only when stopped or ready.** `resetForNewTrip` calls `assertConfigurable()` first and throws `NotStoppedError` unless `runState` is `stopped` (`0x09`) or `ready` (`0x04`). Recording, start delay and unknown states are refused, not guessed. The user stops the logger with its own button. Reading is allowed in any state.
 - **Never send USB Stop.** On real hardware a Stop (`0x03C0`) makes the logger drop off USB and re-enumerate about 1 s later. The next write then fails with `EPROTO`, so the rest of the session is lost.
 - **Reset always verifies** record count 0, interval and configuration time as written, and the clock within 10 s (polled for up to 10 s while it settles). Mismatch → `NotAppliedError`.
+- **Device lock across processes.** Every HID session (server: `LoggerService.withLogger`, hardware only; `bun run dump`) takes `$XDG_RUNTIME_DIR/rc5plus.lock` (O_EXCL file holding PID, label and start time; a dead holder's lock is reclaimed). Server waits up to 20 s then answers 423; the dump waits up to 60 s; `--watch` skips a cycle after 2 s. Hold it per session, never for a whole watch.
+- **The dump never writes.** `scripts/dump.js` sends everything through `ReadOnlyTransport`, which refuses any operation but GetParameter, GetParameterShadow and GetRecord. It never mounts the drive either. Dumps go to `dumps/` (gitignored, mode 0600) and may hold the PDF password; `--redact` for anything shared.
 - **Localhost only.** There is no auth, so don't default to `0.0.0.0`.
 - Plain JavaScript (ESM) with JSDoc, not TypeScript. Vanilla front end, no framework or build step.
 - Linux only (`"os": ["linux"]`).
@@ -150,7 +159,8 @@ Error mapping in `server.js`: NotConnected → 404, NotStopped → 409 (`NOT_STO
 - Pressing stop on an already stopped logger leaves `0x25` at `0x09`. The display shows "pdf C" and the logger writes `<serial>-<trip>.csv` next to the PDF on its drive. That CSV has a trip summary (start/stop times, interval, stop mode) and the readings. The app's PDF panel lists only `*.pdf`.
 - Starting a new trip with the button discards the previous records (14 → 4 seen during testing).
 - Start time (`0x30`) and stop time (`0x38`) stayed at the 2012-01-01 placeholder on this firmware, even across a start/stop.
-- Don't run two processes against the hidraw node at once: their answers get mixed up (`Answer offset … does not match`).
+- Two processes talking to the hidraw node at once get each other's answers (`Answer offset … does not match`). The device lock prevents this for the server and the dump; any new tool that opens the device must take it too.
+- Mapping unknown bytes: `bun run dump --save`, change one thing on the logger, `bun run dump --save` again, then `bun run dump --diff A B`. Or `bun run dump --watch --shadow` while pressing buttons.
 - `RC5_MOCK_STATE=recording` (or `ready`) starts the simulator in that state, to try out the state checks. The simulator holds writes until a Format, like the hardware.
 - References: python-elitech issue #1 (RC-5+ writes ignored), PRs #12–#14 by honx (full config write, reset sequence, `doc/RC-5.md` protocol notes from the official software).
 - Interval changes take effect from the next recording start.
@@ -160,5 +170,6 @@ Error mapping in `server.js`: NotConnected → 404, NotStopped → 409 (`NOT_STO
 
 - Show a chart of readings in the UI (data is already available from `readRecords`)
 - Start mode / start delay controls (`0x20` bits 0..2, `0x40`)
+- Show the real trip start/stop times from the shadow space instead of the 2012 placeholder (needs the shadow layout confirmed on more trips)
 - Alarm thresholds (offsets not yet mapped in `parameters.js`; see the upstream table)
 - Optional SQLite archive of exports per serial number (matches the usual Bun + Hono + SQLite stack)

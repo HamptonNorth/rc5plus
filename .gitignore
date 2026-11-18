@@ -1,8 +1,10 @@
 # Dependencies
 node_modules/
 
-# Exported readings and copies of logger reports (personal data)
+# Exported readings, copies of logger reports and diagnostic dumps
+# (personal data: serial numbers, descriptions, possibly the PDF password)
 exports/
+dumps/
 
 # Logs and local environment
 *.log
