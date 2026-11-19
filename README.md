@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.3.0
+  Version: 1.4.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -88,6 +88,7 @@ Browser ──HTTP──▶ Hono (src/server.js)
 - **Records**: 8-byte little-endian packed words (time, temperature in tenths, flags), 6 per request.
 - **Run state** is byte `0x25`: `0x04` ready (reset, not started), `0x05` start delay, `0x07` recording, `0x09` stopped. A reset is allowed only when stopped or ready; anything else is refused.
 - **Settings** are committed by Format. The logger acknowledges a parameter write but keeps the old value until a Format follows, and Format erases the readings. Reset therefore writes the interval and configuration time, sends Format, then reads everything back.
+- **Trip times** ("Recording started", "Last reading") come from the logger's second "shadow" memory space (read with operation `0x05`), because the RC-5+ never fills in the start/stop times in its main settings memory. This layout was worked out from one logger and is still being confirmed; if the shadow read fails, the rest of the info still loads.
 - **Times** are the logger's local wall-clock time. Clear writes this PC's local time.
 
 ## API

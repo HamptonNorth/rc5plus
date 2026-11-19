@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/rc5plus.js
-// Version: 1.2.0
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // High-level RC-5+ operations built on a transport:
@@ -43,6 +43,8 @@ import {
 import { buildFrame, FrameError, parseResponse } from "./frame.js";
 import {
   CONFIGURABLE_STATES,
+  SHADOW_MIN_PROTOCOL,
+  SHADOW_READ_BLOCK,
   decodeDateTime,
   decodeInfo,
   encodeDateTime,
@@ -239,7 +241,31 @@ export class Rc5Plus {
     for (const block of READ_BLOCKS) {
       image.add(block.offset, await this.readParameterBytes(block.offset, block.length));
     }
-    return decodeInfo(image);
+
+    // The real trip start and last-reading times live in the shadow space
+    // (see parameters.ShadowParam). Optional: on failure, info still loads.
+    let shadow = null;
+    if (image.get(Param.protocolVersion)[0] >= SHADOW_MIN_PROTOCOL) {
+      try {
+        shadow = await this.readShadowBytes(SHADOW_READ_BLOCK.offset, SHADOW_READ_BLOCK.length);
+      } catch {
+        shadow = null;
+      }
+    }
+    return decodeInfo(image, shadow);
+  }
+
+  /**
+   * Read `length` bytes of the shadow space starting at `offset`.
+   *
+   * @param {number} offset
+   * @param {number} length  1..52
+   * @returns {Promise<Uint8Array>}
+   */
+  async readShadowBytes(offset, length) {
+    const op = Operation.GetParameterShadow;
+    const answer = await this.transport.exchange(buildFrame(op, offset, length));
+    return parseResponse(op, offset, length, answer);
   }
 
   /**

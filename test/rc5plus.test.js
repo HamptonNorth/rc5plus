@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    test/rc5plus.test.js
-// Version: 1.2.0
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Exercises the high-level Rc5Plus operations and CSV export against the
@@ -17,6 +17,7 @@ import { Operation } from "../src/elitech/constants.js";
 import { MockRc5Plus, MockTransport } from "../src/elitech/mock-device.js";
 import {
   decodeInfo,
+  decodeShadowTimes,
   encodeDateTime,
   ParameterImage,
   StopMode,
@@ -71,6 +72,76 @@ describe("Rc5Plus against the simulated logger", () => {
   });
 });
 
+describe("trip times from the shadow space", () => {
+  test("readInfo reports the real start and last-reading times", async () => {
+    const { logger } = setup({ recordCount: 7, intervalSeconds: 60 });
+    const info = await logger.readInfo();
+    const { records } = await logger.readRecords(info);
+
+    expect(info.shadowRead).toBe(true);
+    expect(info.tripStartTime).toBe(records[0].time);
+    expect(info.firstRecordTime).toBe(records[0].time);
+    expect(info.lastRecordTime).toBe(records.at(-1).time);
+  });
+
+  test("the main-space 2012 placeholder decodes as unset", async () => {
+    const { logger } = setup();
+    const info = await logger.readInfo();
+    expect(info.startTime).toBe(null);
+    expect(info.stopTime).toBe(null);
+  });
+
+  test("decodes the shadow bytes captured from a real RC-5+", () => {
+    // 0x00..0x18 of the shadow space: a stopped 7-record trip, then after a reset.
+    const trip = Uint8Array.from(Buffer.from(
+      "011a0b0012110a321a0bff12110a32000000" + "1a0bff12111032", "hex"));
+    expect(decodeShadowTimes(trip)).toEqual({
+      tripStartTime: "2026-11-18 17:10:50",
+      firstRecordTime: "2026-11-18 17:10:50",
+      lastRecordTime: "2026-11-18 17:16:50",
+    });
+
+    const reset = Uint8Array.from(Buffer.from(
+      "00000000000000" + "00" + "ffffffffffffff" + "000000" + "ffffffffffffff", "hex"));
+    expect(decodeShadowTimes(reset)).toEqual({
+      tripStartTime: null, firstRecordTime: null, lastRecordTime: null,
+    });
+  });
+
+  test("a reset clears the trip times", async () => {
+    const { logger } = setup({ recordCount: 30 });
+    const info = await logger.resetForNewTrip(5);
+    expect(info.tripStartTime).toBe(null);
+    expect(info.lastRecordTime).toBe(null);
+  });
+
+  test("older protocols are not asked for the shadow space", async () => {
+    const { device, logger } = setup({ protocolVersion: 0x24 });
+    device.log.length = 0;
+    const info = await logger.readInfo();
+
+    expect(device.log.some((f) => opOf(f) === Operation.GetParameterShadow)).toBe(false);
+    expect(info.shadowRead).toBe(false);
+    expect(info.tripStartTime).toBe(null);
+  });
+
+  test("a logger that doesn't answer the shadow read still gives its info", async () => {
+    const { device, logger } = setup({ recordCount: 5 });
+    const original = device.handle.bind(device);
+    device.handle = (request) => {
+      if (opOf(request) === Operation.GetParameterShadow) {
+        throw new Error("No response from logger within 2000 ms");
+      }
+      return original(request);
+    };
+
+    const info = await logger.readInfo();
+    expect(info.recordCount).toBe(5);
+    expect(info.shadowRead).toBe(false);
+    expect(info.lastRecordTime).toBe(null);
+  });
+});
+
 describe("resetForNewTrip", () => {
   test("writes interval and clock, then Format, and never sends Stop", async () => {
     const { device, logger } = setup({ recordCount: 500, intervalSeconds: 120 });
@@ -78,8 +149,9 @@ describe("resetForNewTrip", () => {
 
     await logger.resetForNewTrip(1);
 
+    const reads = [Operation.GetParameter, Operation.GetParameterShadow];
     const commands = device.log
-      .filter((f) => opOf(f) !== Operation.GetParameter)
+      .filter((f) => !reads.includes(opOf(f)))
       .map((f) => [opOf(f), offsetOf(f)]);
     expect(commands).toEqual([
       [Operation.SetParameter, 0x4c], // interval

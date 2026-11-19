@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/mock-device.js
-// Version: 1.3.0
+// Version: 1.4.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // A simulated RC-5+ that speaks the same frame protocol as the real logger.
@@ -19,8 +19,10 @@
 //     sets the clock.
 //   - While recording, writes are acknowledged and thrown away.
 //   - A USB Stop marks the stop mode as "software".
-//   - The shadow space (op 0x05) only models the 2-byte record count at
-//     0x84, as seen on a real RC-5+; everything else is zero.
+//   - The shadow space (op 0x05) models the trip times at 0x01 (start),
+//     0x08 (first record) and 0x12 (last record) and the 2-byte record
+//     count at 0x84, as seen on a real RC-5+; after a Format the times read
+//     as 0x00 / 0xFF like the hardware. Everything else is zero.
 //
 // GPL-3.0-or-later. See LICENSE.
 // =============================================================================
@@ -39,6 +41,7 @@ import {
 import { checksum } from "./frame.js";
 import {
   DeviceState,
+  ShadowParam,
   encodeDateTime,
   encodeInterval,
   Param,
@@ -109,6 +112,7 @@ export class MockRc5Plus {
    * @param {string} [options.serialNumber]
    * @param {number} [options.recordCount]      Records to pre-load.
    * @param {number} [options.intervalSeconds]
+   * @param {number} [options.protocolVersion]  Default 0x38, as the real RC-5+.
    * @param {"stopped"|"recording"|"ready"} [options.state]
    *   "stopped" (default) is a logger stopped with its button;
    *   "recording" is one that is recording and paused for USB;
@@ -119,6 +123,7 @@ export class MockRc5Plus {
     recordCount = 288,
     intervalSeconds = 300,
     state = "stopped",
+    protocolVersion = 0x38,
   } = {}) {
     this.memory = new Uint8Array(0x200);
     this.records = [];
@@ -136,7 +141,9 @@ export class MockRc5Plus {
     this.memory[Param.firmwareVersion.offset] = 0x15;
     this.memory[Param.startMode.offset] = 0b001; // Manual (button)
     this.memory[Param.batteryLevel.offset] = 0x04;
-    this.memory[Param.protocolVersion.offset] = 0x24;
+    this.memory[Param.protocolVersion.offset] = protocolVersion;
+    // Like the real logger: the main start/stop times hold a placeholder.
+    const placeholder = [0x0c, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01];
     this.memory.set([0x00, 0x00, 0x7d, 0x00], Param.deviceCapacity.offset); // 32000
     this.memory.set(encodeInterval(intervalSeconds), Param.interval.offset);
     // Bits 3 and 4 of 0x26 (temporary-pdf, display-time) are set on the
@@ -149,7 +156,8 @@ export class MockRc5Plus {
     now.setSeconds(0, 0);
     const start = new Date(now.getTime() - recordCount * intervalSeconds * 1000);
     this.memory.set(encodeDateTime(start), Param.configurationTime.offset);
-    this.memory.set(encodeDateTime(start), Param.startTime.offset);
+    this.memory.set(placeholder, Param.startTime.offset);
+    this.memory.set(placeholder, Param.stopTime.offset);
 
     for (let i = 0; i < recordCount; i++) {
       const t = new Date(start.getTime() + i * intervalSeconds * 1000);
@@ -158,6 +166,30 @@ export class MockRc5Plus {
       this.records.push(encodeRecord(t, Math.round(temp * 10) / 10));
     }
     this.syncRecordCount();
+    this.clearShadowTimes();
+    if (recordCount > 0) {
+      const last = new Date(start.getTime() + (recordCount - 1) * intervalSeconds * 1000);
+      this.setShadowTime(ShadowParam.tripStartTime, start, 0x00);
+      this.setShadowTime(ShadowParam.firstRecordTime, start, 0xff);
+      this.setShadowTime(ShadowParam.lastRecordTime, last, 0xff);
+    }
+  }
+
+  /**
+   * Write a shadow trip time. The real logger puts 0x00 or 0xFF in the
+   * day-of-week byte here, so the caller chooses which.
+   */
+  setShadowTime(field, date, dowByte) {
+    const bytes = encodeDateTime(date);
+    bytes[2] = dowByte;
+    this.shadow.set(bytes, field.offset);
+  }
+
+  /** Shadow trip times as seen on hardware straight after a reset. */
+  clearShadowTimes() {
+    this.shadow.fill(0x00, ShadowParam.tripStartTime.offset, ShadowParam.tripStartTime.offset + 7);
+    this.shadow.fill(0xff, ShadowParam.firstRecordTime.offset, ShadowParam.firstRecordTime.offset + 7);
+    this.shadow.fill(0xff, ShadowParam.lastRecordTime.offset, ShadowParam.lastRecordTime.offset + 7);
   }
 
   /**
@@ -261,7 +293,7 @@ export class MockRc5Plus {
       }
 
       case Operation.Stop:
-        this.memory.set(encodeDateTime(new Date()), Param.stopTime.offset);
+        // The real logger leaves the main stop time at its placeholder.
         this.memory[Param.deviceState.offset] = DeviceState.Stopped;
         this.memory[Param.stopMode.offset] =
           (this.memory[Param.stopMode.offset] & ~0b111) | StopMode.Software;
@@ -271,8 +303,7 @@ export class MockRc5Plus {
         this.commitPending();
         this.records = [];
         this.syncRecordCount();
-        this.memory.fill(0, Param.startTime.offset, Param.startTime.offset + 7);
-        this.memory.fill(0, Param.stopTime.offset, Param.stopTime.offset + 7);
+        this.clearShadowTimes();
         // Seen on hardware after a reset: 0x25 = 0x04, 0x26 = 0x1b.
         this.memory[Param.deviceState.offset] = DeviceState.Configured;
         this.memory[Param.stopMode.offset] =

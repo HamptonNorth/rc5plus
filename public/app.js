@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    public/app.js
-// Version: 1.2.1
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Browser side: polls for the logger, renders its details, and drives the
@@ -142,8 +142,11 @@ function renderInfo(info) {
   $("interval").textContent = formatInterval(info.intervalSeconds);
   $("device-time").textContent = info.deviceTime ?? "—";
   $("timezone").textContent = info.timezone ? `UTC${info.timezone}` : "—";
-  $("start-time").textContent = info.startTime ?? "—";
-  $("stop-time").textContent = info.stopTime ?? "—";
+  // Trip times come from the logger's shadow memory (the main start/stop
+  // fields only hold a placeholder on the RC-5+). Fall back to the main
+  // fields in case another firmware does fill them in.
+  $("start-time").textContent = info.tripStartTime ?? info.startTime ?? "—";
+  $("last-reading").textContent = info.lastRecordTime ?? info.stopTime ?? "—";
   $("config-time").textContent = info.configurationTime ?? "—";
   $("battery").textContent = `level ${info.batteryLevel}`;
   $("run-state").textContent = formatRunState(info);

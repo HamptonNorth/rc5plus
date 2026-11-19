@@ -1,6 +1,6 @@
 <!--
   File:    CLAUDE.md
-  Version: 1.3.0
+  Version: 1.4.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   Purpose: Handover context for Claude Code (Zed agent panel / CLI)
 -->
@@ -19,8 +19,8 @@ Features:
 
 ## Status
 
-- v1.3.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
-- 264 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
+- v1.4.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
+- 270 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
 - Hardware verification checklist (README "First run on a real logger"):
   - [x] Serial number and record count match the logger and the PDF (2026-11-18)
   - [x] CSV rows match the logger's own CSV report exactly (2026-11-18, 4 rows)
@@ -79,7 +79,7 @@ test/
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/status` | sysfs scan only, no USB traffic. The UI polls it every 2.5 s |
-| GET | `/api/info` | 3 GetParameter frames |
+| GET | `/api/info` | 3 GetParameter frames, plus 1 shadow read (op `0x0005`, `0x00..0x18`) when protocol ≥ `0x30`. Adds `tripStartTime`, `firstRecordTime`, `lastRecordTime`, `shadowRead` |
 | POST | `/api/reset` | `{ minutes: 1..15, confirm: true }`. Sets interval + clock, erases records |
 | GET | `/api/export.csv` | headers `X-Record-Count`, `X-Saved-As` |
 | GET | `/api/pdfs` | `{ mountPoint, files[], reason? }` |
@@ -158,7 +158,8 @@ Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, 
 - Record layout: python-elitech PR #13 says protocol ≥ `0x30` uses a new record layout. Not true for this RC-5+: the old layout decodes `0x38` records correctly (checked against the logger's own CSV).
 - Pressing stop on an already stopped logger leaves `0x25` at `0x09`. The display shows "pdf C" and the logger writes `<serial>-<trip>.csv` next to the PDF on its drive. That CSV has a trip summary (start/stop times, interval, stop mode) and the readings. The app's PDF panel lists only `*.pdf`.
 - Starting a new trip with the button discards the previous records (14 → 4 seen during testing).
-- Start time (`0x30`) and stop time (`0x38`) stayed at the 2012-01-01 placeholder on this firmware, even across a start/stop.
+- Start time (`0x30`) and stop time (`0x38`) stayed at the 2012-01-01 01:01:01 placeholder on this firmware, even across a start/stop. `decodeInfo` treats that value as unset (null). The real trip times come from the shadow space (`ShadowParam` in `parameters.js`); the UI shows `tripStartTime` as "Recording started" and `lastRecordTime` as "Last reading" (not "stopped": it's the last record's time, which matched the logger's own stop time on the one trip checked).
+- Shadow trip times after a reset: `0x01..0x07` all `00`, `0x08..0x0E` and `0x12..0x18` all `ff`, so they decode as null. Seen 2026-11-19. Still to confirm on more trips: whether `0x01` (start) ever differs from `0x08` (first record), e.g. with a start delay.
 - Two processes talking to the hidraw node at once get each other's answers (`Answer offset … does not match`). The device lock prevents this for the server and the dump; any new tool that opens the device must take it too.
 - Mapping unknown bytes: `bun run dump --save`, change one thing on the logger, `bun run dump --save` again, then `bun run dump --diff A B`. Or `bun run dump --watch --shadow` while pressing buttons.
 - `RC5_MOCK_STATE=recording` (or `ready`) starts the simulator in that state, to try out the state checks. The simulator holds writes until a Format, like the hardware.
@@ -170,6 +171,5 @@ Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, 
 
 - Show a chart of readings in the UI (data is already available from `readRecords`)
 - Start mode / start delay controls (`0x20` bits 0..2, `0x40`)
-- Show the real trip start/stop times from the shadow space instead of the 2012 placeholder (needs the shadow layout confirmed on more trips)
 - Alarm thresholds (offsets not yet mapped in `parameters.js`; see the upstream table)
 - Optional SQLite archive of exports per serial number (matches the usual Bun + Hono + SQLite stack)

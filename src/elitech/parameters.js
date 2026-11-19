@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/parameters.js
-// Version: 1.2.0
+// Version: 1.3.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // The subset of the RC-5+ parameter memory map this app reads or writes,
@@ -40,6 +40,40 @@ export const Param = Object.freeze({
   deviceTime: { offset: 0x88, length: 7 },
   protocolVersion: { offset: 0x95, length: 1 },
 });
+
+/**
+ * Fields of the "shadow" memory space, read with GetParameterShadow (0x0005).
+ *
+ * Tentative layout, from a real RC-5+ (firmware 0x57, protocol 0x38):
+ *   - a stopped trip of 7 records (2026-11-18): 0x01 and 0x08 both held the
+ *     first record's time, 0x12 the last record's time
+ *   - after a reset: 0x01..0x07 all 0x00, 0x08..0x0E and 0x12..0x18 all 0xFF
+ *     (both decode as unset)
+ * The main space's start/stop times (0x30, 0x38) only ever held the
+ * placeholder 2012-01-01 01:01:01 on that logger, so these are the only
+ * real trip times available over USB.
+ */
+export const ShadowParam = Object.freeze({
+  tripStartTime: { offset: 0x01, length: 7 },
+  firstRecordTime: { offset: 0x08, length: 7 },
+  lastRecordTime: { offset: 0x12, length: 7 },
+});
+
+/** The one shadow block readInfo() reads: 0x00..0x18 covers all three. */
+export const SHADOW_READ_BLOCK = Object.freeze({ offset: 0x00, length: 0x19 });
+
+/**
+ * Only loggers of this protocol version or later are asked for the shadow
+ * space (python-elitech PR #12 draws the same line for the newer devices).
+ * Older ones may not answer at all, which would cost a timeout on every read.
+ */
+export const SHADOW_MIN_PROTOCOL = 0x30;
+
+/**
+ * Value the RC-5+ keeps in the main start/stop time fields when they are
+ * not maintained. Decoded as "unset".
+ */
+const PLACEHOLDER_DATE_TIME = "2012-01-01 01:01:01";
 
 /**
  * Contiguous blocks read from the device to obtain every field above.
@@ -243,12 +277,42 @@ export function decodeTimezone(data) {
 }
 
 /**
+ * Like decodeDateTime(), but the RC-5+'s 2012 placeholder also means unset.
+ *
+ * @param {Uint8Array} data
+ * @returns {string|null}
+ */
+function decodeTripTime(data) {
+  const text = decodeDateTime(data);
+  return text === PLACEHOLDER_DATE_TIME ? null : text;
+}
+
+/**
+ * Decode the trip times from the shadow block (see ShadowParam).
+ *
+ * @param {Uint8Array|null} shadow  SHADOW_READ_BLOCK bytes, or null if the
+ *   logger was not asked or did not answer.
+ * @returns {{ tripStartTime: string|null, firstRecordTime: string|null,
+ *             lastRecordTime: string|null }}
+ */
+export function decodeShadowTimes(shadow) {
+  const pick = (field) =>
+    shadow ? decodeTripTime(shadow.subarray(field.offset, field.offset + field.length)) : null;
+  return {
+    tripStartTime: pick(ShadowParam.tripStartTime),
+    firstRecordTime: pick(ShadowParam.firstRecordTime),
+    lastRecordTime: pick(ShadowParam.lastRecordTime),
+  };
+}
+
+/**
  * Decode every field this app needs from an assembled parameter image.
  *
  * @param {ParameterImage} image
+ * @param {Uint8Array|null} [shadow]  SHADOW_READ_BLOCK bytes, if read.
  * @returns {object}
  */
-export function decodeInfo(image) {
+export function decodeInfo(image, shadow = null) {
   const intervalUnits = decodeUnsigned(image.get(Param.interval));
   const startModeBits = image.get(Param.startMode)[0] & 0b111;
   const deviceState = image.get(Param.deviceState)[0] & 0x7f;
@@ -266,8 +330,12 @@ export function decodeInfo(image) {
     stopMode: image.get(Param.stopMode)[0] & 0b111,
     batteryLevel: image.get(Param.batteryLevel)[0] & 0x0f,
     configurationTime: decodeDateTime(image.get(Param.configurationTime)),
-    startTime: decodeDateTime(image.get(Param.startTime)),
-    stopTime: decodeDateTime(image.get(Param.stopTime)),
+    // Main-space start/stop: only the 2012 placeholder on the RC-5+ seen so far.
+    startTime: decodeTripTime(image.get(Param.startTime)),
+    stopTime: decodeTripTime(image.get(Param.stopTime)),
+    // Shadow-space trip times: null when unset, not read or not answered.
+    shadowRead: shadow !== null,
+    ...decodeShadowTimes(shadow),
     deviceTime: decodeDateTime(image.get(Param.deviceTime)),
     deviceCapacity: decodeUnsigned(image.get(Param.deviceCapacity)),
     recordCount: decodeUnsigned(image.get(Param.recordNumber)),
