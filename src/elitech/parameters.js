@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/parameters.js
-// Version: 1.4.0
+// Version: 1.5.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // The subset of the RC-5+ parameter memory map this app reads or writes,
@@ -24,6 +24,7 @@
 export const Param = Object.freeze({
   model: { offset: 0x00, length: 2 },
   serialNumber: { offset: 0x02, length: 12 },
+  tripNumber: { offset: 0x10, length: 13 }, // "Trip Id" on the report (python-elitech: travel-number)
   firmwareVersion: { offset: 0x1f, length: 1 },
   startMode: { offset: 0x20, length: 1 }, // bits 0..2
   temperatureUnit: { offset: 0x21, length: 1 }, // bit 3
@@ -84,12 +85,26 @@ const PLACEHOLDER_DATE_TIME = "2012-01-01 01:01:01";
  *   0x00..0x33  model .. start-mode .. timezone .. start-time
  *   0x34..0x4D  stop-time .. capacity .. record count .. interval
  *   0x88..0x95  device time .. protocol version
+ *   0x98..0xFB  description (two frames)
  */
 export const READ_BLOCKS = Object.freeze([
   { offset: 0x00, length: 52 },
   { offset: 0x34, length: 26 },
   { offset: 0x88, length: 14 },
+  { offset: 0x98, length: 52 },
+  { offset: 0xcc, length: 48 },
 ]);
+
+/**
+ * Limits for the two text settings the app writes.
+ *   - Description: printed on the PDF/CSV. 100 bytes of memory; we keep it
+ *     to 64 so it fits the report's line and always ends in NUL padding.
+ *   - Trip number: becomes part of the report file names
+ *     (<serial>-<trip>.pdf), so only letters, digits, "-" and "_".
+ */
+export const DESCRIPTION_MAX_LENGTH = 64;
+export const TRIP_NUMBER_MAX_LENGTH = 12;
+const TRIP_NUMBER_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 // -----------------------------------------------------------------------------
 // Whole settings memory (used by resets and restores)
@@ -306,7 +321,9 @@ export function decodeUnsigned(data) {
  * @returns {string}
  */
 export function decodeString(data) {
-  return new TextDecoder().decode(data).replaceAll("\u0000", "").trim();
+  // Erased memory reads 0xFF; treat it as padding like NUL.
+  const bytes = Uint8Array.from(data, (b) => (b === 0xff ? 0 : b));
+  return new TextDecoder().decode(bytes).replaceAll("\u0000", "").trim();
 }
 
 /**
@@ -412,6 +429,8 @@ export function decodeInfo(image, shadow = null) {
   return {
     model: decodeUnsigned(image.get(Param.model)),
     serialNumber: decodeString(image.get(Param.serialNumber)),
+    tripNumber: decodeString(image.get(Param.tripNumber)),
+    description: decodeString(image.get(Param.description)),
     firmwareVersion: image.get(Param.firmwareVersion)[0],
     protocolVersion: image.get(Param.protocolVersion)[0],
     startMode: START_MODES[startModeBits] ?? `Unknown (${startModeBits})`,
@@ -474,6 +493,38 @@ export function encodeString(text, length) {
   const out = new Uint8Array(length);
   out.set(new TextEncoder().encode(text));
   return out;
+}
+
+/**
+ * Description text to its 100-byte field.
+ *
+ * @param {string} text  Printable ASCII, at most DESCRIPTION_MAX_LENGTH.
+ * @returns {Uint8Array}
+ */
+export function encodeDescription(text) {
+  if (typeof text !== "string" || text.trim() !== text) {
+    throw new RangeError("Description must be text without leading or trailing spaces");
+  }
+  if (text.length > DESCRIPTION_MAX_LENGTH) {
+    throw new RangeError(`Description is too long: at most ${DESCRIPTION_MAX_LENGTH} characters`);
+  }
+  return encodeString(text, Param.description.length);
+}
+
+/**
+ * Trip number to its 13-byte field.
+ *
+ * @param {string} text  1..TRIP_NUMBER_MAX_LENGTH letters, digits, "-" or "_".
+ * @returns {Uint8Array}
+ */
+export function encodeTripNumber(text) {
+  if (typeof text !== "string" || !TRIP_NUMBER_PATTERN.test(text)) {
+    throw new RangeError("Trip number must be letters, digits, \"-\" or \"_\" (no spaces)");
+  }
+  if (text.length > TRIP_NUMBER_MAX_LENGTH) {
+    throw new RangeError(`Trip number is too long: at most ${TRIP_NUMBER_MAX_LENGTH} characters`);
+  }
+  return encodeString(text, Param.tripNumber.length);
 }
 
 /**

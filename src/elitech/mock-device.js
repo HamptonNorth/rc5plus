@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/mock-device.js
-// Version: 1.5.0
+// Version: 1.6.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // A simulated RC-5+ that speaks the same frame protocol as the real logger.
@@ -166,6 +166,7 @@ export class MockRc5Plus {
     this.memory[Param.timezone.offset] = 0x00;
     this.memory[Param.timezone.offset + 11] = 0x00;
     this.memory.set(new TextEncoder().encode("Mock fridge"), Param.description.offset);
+    this.memory.set(new TextEncoder().encode("0000001"), Param.tripNumber.offset);
     this.setRunState(state);
 
     // A recording that started `recordCount` intervals ago.

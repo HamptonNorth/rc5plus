@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.5.0
+  Version: 1.6.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -9,7 +9,7 @@
 A Bun + Hono web app for the **Elitech RC-5+** USB temperature logger on Linux. No ElitechLog, Windows VM or Python needed.
 
 - Detects a connected RC-5+ and shows its serial number and status
-- Resets the logger for a new trip: sets the logging interval (1–15 minutes) and the clock, and erases the stored readings. The RC-5+ only accepts new settings together with an erase, so these are one action.
+- Resets the logger for a new trip: sets the logging interval (1–15 minutes), the description and trip number printed on its reports, and the clock, and erases the stored readings. The RC-5+ only accepts new settings together with an erase, so these are one action.
 - Lets you view and download the PDF report from the logger's USB drive
 - Exports every reading to CSV
 
@@ -67,7 +67,7 @@ The protocol port matches python-elitech byte for byte. It has been checked on o
 
 1. **Read only.** Plug in the logger and open the page. Check that the serial number matches the label on the logger, and that the record count and interval match what ElitechLog or the PDF shows.
 2. **Export.** Click **Download CSV**. Compare a few rows with the PDF.
-3. **Reset**, only after steps 1–2 look right and you've exported anything you need. Pick the interval and click **Reset logger…**. The app checks the logger is stopped and that its settings look valid, and saves a full backup to `dumps/<serial>-<time>-before-reset.json`. It then writes back the logger's whole settings memory with the new interval and the current time, and sends *Format*, which commits them, erases the readings and sets the clock. Finally it checks every settings byte, 0 records and the clock. The **State** row should then read "Ready, not started".
+3. **Reset**, only after steps 1–2 look right and you've exported anything you need. Pick the interval, check the description and trip number (both start as the logger's current values; **Next** adds 1 to the trip number), and click **Reset logger…**. The app checks the logger is stopped and that its settings look valid, and saves a full backup to `dumps/<serial>-<time>-before-reset.json`. It then writes back the logger's whole settings memory with the new interval and the current time, and sends *Format*, which commits them, erases the readings and sets the clock. Finally it checks every settings byte, 0 records and the clock. The **State** row should then read "Ready, not started".
 
 If anything misbehaves, the app reports the logger's error. ElitechLog in a Windows VM can still reset the logger.
 
@@ -97,7 +97,7 @@ Browser ──HTTP──▶ Hono (src/server.js)
 |---|---|---|---|
 | GET | `/api/status` | | `{ connected, devPath, mock }` |
 | GET | `/api/info` | | Serial number, settings, record count, clock |
-| POST | `/api/reset` | `{ "minutes": 1..15, "confirm": true }` | Info after reset (0 records), `409 NOT_STOPPED`, `409 SETTINGS_ERASED` or `502 NOT_APPLIED` |
+| POST | `/api/reset` | `{ "minutes": 1..15, "confirm": true, "description"?: "…", "tripNumber"?: "…" }` (omit a text field to keep it) | Info after reset (0 records), `409 NOT_STOPPED`, `409 SETTINGS_ERASED` or `502 NOT_APPLIED` |
 
 Any request that talks to the logger answers `423 BUSY` if another program (such as `bun run dump`) holds the device lock for more than 20 s.
 | GET | `/api/export.csv` | | CSV download (copy saved in `exports/`) |

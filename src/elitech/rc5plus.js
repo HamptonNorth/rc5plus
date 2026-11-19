@@ -1,11 +1,12 @@
 // =============================================================================
 // File:    src/elitech/rc5plus.js
-// Version: 1.4.0
+// Version: 1.5.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // High-level RC-5+ operations built on a transport:
 //   - readInfo()            serial number, settings, record count, clock
-//   - resetForNewTrip()     set the interval and clock, erase records, verify
+//   - resetForNewTrip()     set the interval, clock and optionally description
+//                           and trip number; erase records; verify
 //   - readSettingsBytes()   the whole settings memory, for backups/restores
 //   - applySettings()       write a whole settings image, Format, verify
 //   - readRecords()         download every stored measurement
@@ -59,7 +60,9 @@ import {
   decodeDateTime,
   decodeInfo,
   encodeDateTime,
+  encodeDescription,
   encodeInterval,
+  encodeTripNumber,
   Param,
   ParameterImage,
   READ_BLOCKS,
@@ -398,8 +401,9 @@ export class Rc5Plus {
   }
 
   /**
-   * Prepare the logger for a new trip: set the interval and the clock,
-   * erase every stored record, keep every other setting, and verify.
+   * Prepare the logger for a new trip: set the interval and the clock
+   * (and, if given, the description and trip number), erase every stored
+   * record, keep every other setting, and verify.
    *
    * Sequence:
    *   1. Validate the interval. Read the logger and check it may be changed
@@ -407,7 +411,8 @@ export class Rc5Plus {
    *      look erased.
    *   2. Read the whole settings memory and hand it to `onBackup`, which
    *      must save it before anything is written.
-   *   3. Patch the interval, configuration time and device time = now.
+   *   3. Patch the interval, configuration time and device time = now,
+   *      and the description / trip number if given.
    *   4. applySettings(): write every block, Format, verify every byte,
    *      0 records, ready, and the clock within 10 s.
    *
@@ -418,9 +423,11 @@ export class Rc5Plus {
    * @param {object} [options]
    * @param {(settings: Uint8Array) => Promise<void>|void} [options.onBackup]
    *   Called with the settings read in step 2, before any write.
+   * @param {string} [options.description]  New description; omit to keep.
+   * @param {string} [options.tripNumber]   New trip number; omit to keep.
    * @returns {Promise<object>} Device info after the reset.
    */
-  async resetForNewTrip(minutes, now = new Date(), { onBackup } = {}) {
+  async resetForNewTrip(minutes, now = new Date(), { onBackup, description, tripNumber } = {}) {
     if (
       !Number.isInteger(minutes) ||
       minutes < MIN_INTERVAL_MINUTES ||
@@ -431,6 +438,10 @@ export class Rc5Plus {
           `${MIN_INTERVAL_MINUTES} and ${MAX_INTERVAL_MINUTES}`,
       );
     }
+
+    // Check the text settings before touching the logger, too.
+    const descriptionBytes = description === undefined ? null : encodeDescription(description);
+    const tripNumberBytes = tripNumber === undefined ? null : encodeTripNumber(tripNumber);
 
     // 1. Refuse to touch a logger that is recording, in an unknown state,
     //    or whose settings are already damaged.
@@ -446,8 +457,11 @@ export class Rc5Plus {
       await onBackup(image.slice());
     }
 
-    // 3. Change only the interval and the two clock fields.
+    // 3. Change only the interval, the two clock fields and the text
+    //    settings asked for.
     const clock = encodeDateTime(now);
+    if (descriptionBytes) image.set(descriptionBytes, Param.description.offset);
+    if (tripNumberBytes) image.set(tripNumberBytes, Param.tripNumber.offset);
     image.set(encodeInterval(minutes * 60), Param.interval.offset);
     image.set(clock, Param.configurationTime.offset);
     image.set(clock, Param.deviceTime.offset);

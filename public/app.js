@@ -1,10 +1,11 @@
 // =============================================================================
 // File:    public/app.js
-// Version: 1.4.0
+// Version: 1.5.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Browser side: polls for the logger, renders its details, and drives the
-// reset (interval + clock + erase), CSV and PDF actions through the JSON API.
+// reset (interval, description, trip number, clock + erase), CSV and PDF
+// actions through the JSON API.
 //
 // GPL-3.0-or-later. See LICENSE.
 // =============================================================================
@@ -158,6 +159,8 @@ function renderInfo(info) {
   $("config-time").textContent = info.configurationTime ?? "—";
   $("battery").textContent = `level ${info.batteryLevel}`;
   $("run-state").textContent = formatRunState(info);
+  $("description").textContent = info.description || "(none)";
+  $("trip-number").textContent = info.tripNumber || "(none)";
 
   const warning = stateWarning(info);
   $("state-warning").textContent = warning;
@@ -168,6 +171,9 @@ function renderInfo(info) {
   if (Number.isInteger(minutes) && minutes >= 1 && minutes <= 15) {
     $("interval-select").value = String(minutes);
   }
+  // Start the text fields from what the logger holds now.
+  $("description-input").value = info.description;
+  $("trip-input").value = info.tripNumber;
 
   updateControls();
 }
@@ -346,9 +352,28 @@ async function refreshAfterRefusal(err) {
   }
 }
 
+/**
+ * The trip number after `text`: its trailing digits plus one, keeping the
+ * width ("0000001" -> "0000002"). Unchanged if it doesn't end in digits.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function nextTripNumber(text) {
+  const match = /^(.*?)(\d+)$/.exec(text);
+  if (!match) return text;
+  const [, prefix, digits] = match;
+  const next = String(Number(digits) + 1).padStart(digits.length, "0");
+  return `${prefix}${next}`.slice(0, 12);
+}
+
 /** Ask for confirmation before resetting the logger. */
 function openResetDialog(event) {
   event.preventDefault();
+  $("description-input").value = $("description-input").value.trim();
+  if (!$("reset-form").reportValidity()) return;
+  $("reset-description").textContent = $("description-input").value || "(none)";
+  $("reset-trip").textContent = $("trip-input").value;
   const minutes = Number($("interval-select").value);
   $("reset-serial").textContent = currentInfo?.serialNumber ?? "";
   $("reset-count").textContent = currentInfo
@@ -362,19 +387,22 @@ function openResetDialog(event) {
 async function onResetDialogClose() {
   if ($("reset-dialog").returnValue !== "confirm") return;
   const minutes = Number($("interval-select").value);
+  const description = $("description-input").value.trim();
+  const tripNumber = $("trip-input").value;
 
   await runBusy($("reset-open"), async () => {
     setResult("reset-result", "Resetting the logger (this takes a few seconds)…");
     try {
       const response = await api("/api/reset", {
         method: "POST",
-        body: JSON.stringify({ minutes, confirm: true }),
+        body: JSON.stringify({ minutes, description, tripNumber, confirm: true }),
       });
       const info = await response.json();
       renderInfo(info);
       setResult(
         "reset-result",
         `Reset done: readings erased, interval ${formatInterval(info.intervalSeconds)}, ` +
+          `trip ${info.tripNumber}, ` +
           `clock ${info.deviceTime}. Start the logger with its button when you're ready. ` +
           "Unplug and replug it to refresh the USB drive.",
       );
@@ -403,6 +431,9 @@ function init() {
   $("refresh").addEventListener("click", () => runBusy($("refresh"), loadAll));
   $("export-csv").addEventListener("click", () => runBusy($("export-csv"), exportCsv));
   $("reset-form").addEventListener("submit", openResetDialog);
+  $("trip-next").addEventListener("click", () => {
+    $("trip-input").value = nextTripNumber($("trip-input").value);
+  });
   $("reset-dialog").addEventListener("close", onResetDialogClose);
   $("pdf-close").addEventListener("click", () => {
     $("pdf-viewer-card").hidden = true;

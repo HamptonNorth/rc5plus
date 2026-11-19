@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    test/rc5plus.test.js
-// Version: 1.4.0
+// Version: 1.5.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Exercises the high-level Rc5Plus operations and CSV export against the
@@ -268,6 +268,58 @@ describe("resetForNewTrip", () => {
     const { logger } = setup({ state: "ready", recordCount: 0 });
     const info = await logger.resetForNewTrip(5);
     expect(info.intervalSeconds).toBe(300);
+  });
+
+  test("reads the description and trip number", async () => {
+    const { logger } = setup();
+    const info = await logger.readInfo();
+    expect(info.description).toBe("Mock fridge");
+    expect(info.tripNumber).toBe("0000001");
+  });
+
+  test("sets the description and trip number when given, and keeps them when not", async () => {
+    const { logger } = setup({ recordCount: 20 });
+
+    let info = await logger.resetForNewTrip(5, new Date(), {
+      description: "Pharmacy fridge 2",
+      tripNumber: "0000002",
+    });
+    expect(info.description).toBe("Pharmacy fridge 2");
+    expect(info.tripNumber).toBe("0000002");
+    expect(info.intervalSeconds).toBe(300);
+
+    // A shorter value must not leave the tail of the longer one behind.
+    info = await logger.resetForNewTrip(5, new Date(), { description: "Van" });
+    expect(info.description).toBe("Van");
+    expect(info.tripNumber).toBe("0000002");
+
+    info = await logger.resetForNewTrip(5);
+    expect(info.description).toBe("Van");
+    expect(info.tripNumber).toBe("0000002");
+  });
+
+  test("an empty description clears it", async () => {
+    const { logger } = setup();
+    const info = await logger.resetForNewTrip(1, new Date(), { description: "" });
+    expect(info.description).toBe("");
+  });
+
+  test("rejects bad descriptions and trip numbers before touching the logger", async () => {
+    const { device, logger } = setup();
+    device.log.length = 0;
+    const bad = [
+      { description: "x".repeat(65) },
+      { description: "Café" }, // not ASCII
+      { description: " padded " },
+      { tripNumber: "" },
+      { tripNumber: "trip 2" }, // space: ends up in file names
+      { tripNumber: "../etc" },
+      { tripNumber: "1234567890123" }, // 13 characters
+    ];
+    for (const options of bad) {
+      await expect(logger.resetForNewTrip(1, new Date(), options)).rejects.toThrow(RangeError);
+    }
+    expect(device.log.length).toBe(0);
   });
 
   test("rejects intervals outside 1..15 before touching the logger", async () => {

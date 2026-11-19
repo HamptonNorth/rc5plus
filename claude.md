@@ -1,6 +1,6 @@
 <!--
   File:    CLAUDE.md
-  Version: 1.5.0
+  Version: 1.6.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   Purpose: Handover context for Claude Code (Zed agent panel / CLI)
 -->
@@ -13,7 +13,7 @@ A Bun + Hono web app for one device only: the **Elitech RC-5+** USB temperature 
 
 Features:
 1. Detect the logger and show its serial number and status
-2. Reset for a new trip: set interval (1–15 min) + clock, erase records, verify. On this firmware a settings change can't be made without erasing, so this is one action (user's decision, 2026-11-18)
+2. Reset for a new trip: set interval (1–15 min), description, trip number + clock, erase records, verify. On this firmware a settings change can't be made without erasing, so this is one action (user's decision, 2026-11-18)
 3. View and download the PDF from the logger's USB mass-storage drive
 4. Export all records to CSV (sent to the browser, with a copy saved in `exports/`)
 
@@ -30,6 +30,7 @@ Features:
   - [x] `bun run restore --write` on the RC-5+ TE (2026-11-19) from logger 1's dump: every byte stuck except `0x86..0x87`, which turned out to be the live temperature reading (tenths), now logger-owned
   - [x] Full-block reset via the app on the RC-5+ TE (2026-11-19)
   - [x] Full-block reset via the app on the plain RC-5+ (logger 1, 2026-11-19): main-space diff against the `-before-reset` dump showed only state, stop mode, configuration time, record count, clock and live temperature
+  - [ ] Description (`0x98`) and trip number (`0x10`) set through the Reset card on hardware, and shown on the logger's own PDF/CSV (not yet done)
   - [ ] Shadow `0x90`/`0x98`/`0xA0` (2 bytes each) look like trip temperature statistics in tenths (`0x00F7` 24.7, `0x00DE` 22.2, `0x00E0` 22.4 after a 16-record trip; `0x0FA0` = unset after a reset). Unconfirmed: which is max/min/mean
   - [x] TE sensor setting: restored with `0x21 = 0x00` (copied from logger 1); readings follow the external probe (2026-11-19). So `0x21` bit 1 doesn't select the TE's probe; `0x1E = 02` (kept from the TE) probably marks the model
 
@@ -87,7 +88,7 @@ test/
 |---|---|---|
 | GET | `/api/status` | sysfs scan only, no USB traffic. The UI polls it every 2.5 s |
 | GET | `/api/info` | 3 GetParameter frames, plus 1 shadow read (op `0x0005`, `0x00..0x18`) when protocol ≥ `0x30`. Adds `tripStartTime`, `firstRecordTime`, `lastRecordTime`, `shadowRead` |
-| POST | `/api/reset` | `{ minutes: 1..15, confirm: true }`. Sets interval + clock, erases records |
+| POST | `/api/reset` | `{ minutes: 1..15, confirm: true, description?, tripNumber? }`. Sets interval + clock (+ description, trip number; omitted = keep), erases records |
 | GET | `/api/export.csv` | headers `X-Record-Count`, `X-Saved-As` |
 | GET | `/api/pdfs` | `{ mountPoint, files[], reason? }` |
 | GET | `/api/pdfs/:name` | `?download=1` for attachment. The name must be in the listing (prevents path traversal) |
@@ -132,6 +133,7 @@ Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, 
 - **Write every settings block, then Format** (user's decision, 2026-11-19). Reset reads `0x000`–`0x154`, patches interval (`0x4C`), configuration time (`0x28`) and device time (`0x88`), writes the official software's blocks (`SETTINGS_WRITE_BLOCKS`: `0x00`/`0x30`/`0x60`/`0x98`/`0xCC`/`0xFD`/`0x13C`), Formats, and compares every byte except the logger-owned bits (`LOGGER_OWNED_BITS`). On a mismatch it writes all blocks once more (the official write → Format → write) and checks again. Writing only the changed fields erased an RC-5+ TE's settings on 2026-11-19; don't go back to it.
 - **Back up before every write.** The server saves a full dump (`dumps/<serial>-<time>-before-reset.json`) through `onBackup` before resetting; `bun run restore` saves `-before-restore`. A backup failure aborts the reset.
 - **Never reset a logger whose settings look erased** (`settingsErased`: start mode or time zone undecodable). `SettingsErasedError` → `409 SETTINGS_ERASED`. Use `bun run restore` from a good dump instead.
+- **Text settings:** description max 64 printable ASCII characters (memory holds 100; keeping NUL padding and the report line in mind); trip number 1–12 of `A–Z a–z 0–9 - _`, because the logger puts it in its report file names (`<serial>-<trip>.pdf`). Validated in `encodeDescription`/`encodeTripNumber` before the logger is touched (`RangeError` → 400). The UI pre-fills both from the logger and has a "Next" button for the trip number.
 - **One reset operation.** Since any settings change erases the records, `resetForNewTrip(minutes)` is the only write operation (`POST /api/reset`). There is no separate set-interval or clear.
 - **Change settings only when stopped or ready.** `resetForNewTrip` calls `assertConfigurable()` first and throws `NotStoppedError` unless `runState` is `stopped` (`0x09`) or `ready` (`0x04`). Recording, start delay and unknown states are refused, not guessed. The user stops the logger with its own button. Reading is allowed in any state.
 - **Never send USB Stop.** On real hardware a Stop (`0x03C0`) makes the logger drop off USB and re-enumerate about 1 s later. The next write then fails with `EPROTO`, so the rest of the session is lost.

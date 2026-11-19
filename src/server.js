@@ -1,14 +1,16 @@
 // =============================================================================
 // File:    src/server.js
-// Version: 1.4.0
+// Version: 1.5.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Hono HTTP server: JSON API for the logger plus the static web UI.
 //
 //   GET  /api/status            is a logger plugged in? (no USB traffic)
 //   GET  /api/info              serial number, settings, record count
-//   POST /api/reset             { minutes: 1..15, confirm: true }
-//                               new trip: set interval + clock, erase records
+//   POST /api/reset             { minutes: 1..15, confirm: true,
+//                                 description?: string, tripNumber?: string }
+//                               new trip: set interval + clock (+ description,
+//                               trip number), erase records
 //                               (logger must be stopped or already reset);
 //                               a full dump is saved to dumps/ first
 //   GET  /api/export.csv        download all records as CSV (copy kept in exports/)
@@ -110,8 +112,13 @@ app.post("/api/reset", async (c) => {
     );
   }
   const minutes = Number(body.minutes);
+  // Omitted or null: keep the logger's current value.
+  const description = body.description ?? undefined;
+  const tripNumber = body.tripNumber ?? undefined;
   const info = await service.withLogger((logger, device) =>
     logger.resetForNewTrip(minutes, new Date(), {
+      description,
+      tripNumber,
       // A full dump (settings and shadow) before anything is written, so a
       // reset that goes wrong can be undone with `bun run restore`.
       onBackup: async () => {
