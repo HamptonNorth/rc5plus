@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    scripts/dump.js
-// Version: 1.0.0
+// Version: 1.0.1
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // `bun run dump` — read-only diagnostic snapshot of a connected RC-5+.
@@ -35,7 +35,7 @@ import {
   formatSnapshot,
   ReadOnlyTransport,
   redactSnapshot,
-  serialOf,
+  saveSnapshot,
   takeSnapshot,
   withoutClockNoise,
 } from "../src/lib/dump.js";
@@ -162,16 +162,6 @@ async function withReadOnlyLogger(device, timeoutMs, fn, quiet = false) {
   }
 }
 
-/** File name for a saved dump: <serial>-YYYYMMDD-HHMMSS.json */
-function dumpFileName(snapshot) {
-  const d = new Date(snapshot.createdAt);
-  const pad = (n) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  const who = snapshot.redacted ? "redacted" : (serialOf(snapshot) ?? "unknown").replace(/[^A-Za-z0-9_-]/g, "_");
-  return `${who}-${stamp}.json`;
-}
-
 // -----------------------------------------------------------------------------
 // Modes
 // -----------------------------------------------------------------------------
@@ -198,9 +188,7 @@ async function runOnce(opts) {
   console.log(formatSnapshot(snapshot, { showSecrets: opts.showSecrets }));
 
   if (opts.save) {
-    fs.mkdirSync(DUMP_DIR, { recursive: true });
-    const file = path.join(DUMP_DIR, dumpFileName(snapshot));
-    fs.writeFileSync(file, JSON.stringify(snapshot, null, 2) + "\n", { mode: 0o600 });
+    const file = saveSnapshot(snapshot, DUMP_DIR);
     console.log(`\nSaved ${path.relative(process.cwd(), file)}`);
   }
 }

@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/mock-device.js
-// Version: 1.4.0
+// Version: 1.5.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // A simulated RC-5+ that speaks the same frame protocol as the real logger.
@@ -17,6 +17,10 @@
 //   - Format commits those pending writes, erases the records and leaves
 //     the logger "configured" (0x25 = 0x04). Writing the configuration time
 //     sets the clock.
+//   - With { keepsUnwrittenSettings: false } it behaves like the RC-5+ TE
+//     seen on 2026-11-19: a Format turns every settings byte in 0x10..0x7F
+//     that wasn't written since the last Format into 0xFF (record counts
+//     and capacity excepted), and keeps bits 6..7 of 0x25.
 //   - While recording, writes are acknowledged and thrown away.
 //   - A USB Stop marks the stop mode as "software".
 //   - The shadow space (op 0x05) models the trip times at 0x01 (start),
@@ -113,6 +117,10 @@ export class MockRc5Plus {
    * @param {number} [options.recordCount]      Records to pre-load.
    * @param {number} [options.intervalSeconds]
    * @param {number} [options.protocolVersion]  Default 0x38, as the real RC-5+.
+   * @param {boolean} [options.keepsUnwrittenSettings=true]
+   *   false: a Format erases settings that weren't written first (RC-5+ TE).
+   * @param {number[]} [options.ignoredOffsets]
+   *   Bytes whose writes are acknowledged but never kept (to test read-back).
    * @param {"stopped"|"recording"|"ready"} [options.state]
    *   "stopped" (default) is a logger stopped with its button;
    *   "recording" is one that is recording and paused for USB;
@@ -124,7 +132,11 @@ export class MockRc5Plus {
     intervalSeconds = 300,
     state = "stopped",
     protocolVersion = 0x38,
+    keepsUnwrittenSettings = true,
+    ignoredOffsets = [],
   } = {}) {
+    this.keepsUnwrittenSettings = keepsUnwrittenSettings;
+    this.ignoredOffsets = new Set(ignoredOffsets);
     this.memory = new Uint8Array(0x200);
     this.records = [];
     this.log = []; // every request frame received, for tests
@@ -149,6 +161,11 @@ export class MockRc5Plus {
     // Bits 3 and 4 of 0x26 (temporary-pdf, display-time) are set on the
     // real logger; keep them so the byte looks the same (0x18 / 0x1b).
     this.memory[Param.stopMode.offset] = 0b0001_1000;
+    // A valid time zone (UTC: hours 0, minutes 0) and start delay, like a
+    // logger set up by the official software.
+    this.memory[Param.timezone.offset] = 0x00;
+    this.memory[Param.timezone.offset + 11] = 0x00;
+    this.memory.set(new TextEncoder().encode("Mock fridge"), Param.description.offset);
     this.setRunState(state);
 
     // A recording that started `recordCount` intervals ago.
@@ -215,7 +232,7 @@ export class MockRc5Plus {
 
   /** True when the simulated logger is recording. */
   get recording() {
-    return this.memory[Param.deviceState.offset] === DeviceState.Recording;
+    return (this.memory[Param.deviceState.offset] & 0x3f) === DeviceState.Recording;
   }
 
   /** Mirror the record list length into the record-number parameter. */
@@ -236,14 +253,28 @@ export class MockRc5Plus {
    * time also sets the device clock, as on the real logger.
    */
   commitPending() {
+    const written = new Set();
     for (const { offset, bytes } of this.pending) {
-      this.memory.set(bytes, offset);
+      bytes.forEach((b, i) => {
+        if (!this.ignoredOffsets.has(offset + i)) {
+          this.memory[offset + i] = b;
+          written.add(offset + i);
+        }
+      });
 
       const cfg = Param.configurationTime;
       if (offset <= cfg.offset && offset + bytes.length >= cfg.offset + cfg.length) {
         const [yy, mo, , dd, hh, mi, ss] = bytes.subarray(cfg.offset - offset);
         const configured = new Date(2000 + yy, mo - 1, dd, hh, mi, ss);
         this.clockOffsetMs = configured.getTime() - Date.now();
+      }
+    }
+    if (!this.keepsUnwrittenSettings) {
+      for (let i = 0x10; i < 0x80; i++) {
+        const kept = i >= 0x42 && i < 0x4a; // capacity and record counts
+        if (!kept && !written.has(i)) {
+          this.memory[i] = 0xff;
+        }
       }
     }
     this.pending = [];
@@ -304,8 +335,10 @@ export class MockRc5Plus {
         this.records = [];
         this.syncRecordCount();
         this.clearShadowTimes();
-        // Seen on hardware after a reset: 0x25 = 0x04, 0x26 = 0x1b.
-        this.memory[Param.deviceState.offset] = DeviceState.Configured;
+        // Seen on hardware after a reset: 0x25 = 0x04, 0x26 = 0x1b; on the
+        // TE whose settings were erased, 0x25 = 0xC4 (bits 6..7 kept).
+        this.memory[Param.deviceState.offset] =
+          (this.memory[Param.deviceState.offset] & 0xc0) | DeviceState.Configured;
         this.memory[Param.stopMode.offset] =
           (this.memory[Param.stopMode.offset] & ~0b111) | StopMode.UsbPause;
         return responseFrame(op & 0xff, 0, 1, [1]);

@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/lib/dump.js
-// Version: 1.0.0
+// Version: 1.2.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Read-only diagnostic snapshots of an RC-5+, for `bun run dump`
@@ -11,6 +11,8 @@
 //   - redactSnapshot()    blanks serial number, description, password, ...
 //   - diffSnapshots()     byte-level comparison labelled with field names
 //   - formatSnapshot() / formatDiff() / formatChanges()  terminal text
+//   - saveSnapshot()      write dumps/<serial>-<time>[-label].json (mode 0600);
+//                         also used for the backup taken before every reset
 //
 // The field table follows python-elitech's parameter list (including the
 // open PRs #9, #12 and #14). Many of those fields are marked "TODO test"
@@ -148,6 +150,10 @@ export const MAIN_FIELDS = Object.freeze([
   { name: "record-number", offset: 0x48, length: 2, kind: "uint" },
   { name: "interval", offset: 0x4c, length: 2, kind: "interval" },
   { name: "password", offset: 0x80, length: 6, kind: "string", secret: true, personal: true },
+  // 2026-11-19: 0x0108 on an RC-5+ whose record of the same minute read
+  // 26.4 °C; 0x0000 on an RC-5+ TE with erased settings, 0x00FE once
+  // restored. Negative values not seen yet.
+  { name: "current-temperature?", offset: 0x86, length: 2, kind: "tenths" },
   { name: "device-time", offset: 0x88, length: 7, kind: "date", ticks: true },
   { name: "protocol-version", offset: 0x95, length: 1, kind: "hex" },
   { name: "description", offset: 0x98, length: 100, kind: "string", personal: true },
@@ -219,6 +225,8 @@ export function decodeField(field, bytes) {
       return decodeDateTime(raw) ?? "(unset)";
     case "interval":
       return `${decodeUnsigned(raw) * 10} s`;
+    case "tenths":
+      return `${(decodeUnsigned(raw) / 10).toFixed(1)} (raw ${decodeUnsigned(raw)})`;
     case "timezone-hours": {
       // Hours here, minutes at 0x2F: decode the pair like decodeInfo does.
       const block = new Uint8Array(12);
@@ -229,7 +237,7 @@ export function decodeField(field, bytes) {
     case "timezone-minutes":
       return `${raw[0]} min (see timezone-hours)`;
     case "run-state":
-      return decodeRunState(raw[0] & 0x7f);
+      return decodeRunState(raw[0]);
     case "flags":
       return field.bits
         .map(([name, first, width]) => `${name}=${(raw[0] >> first) & ((1 << width) - 1)}`)
@@ -439,6 +447,65 @@ export async function takeSnapshot(transport, device, options = {}) {
   }
 
   return snapshot;
+}
+
+/**
+ * File name for a saved snapshot: <serial>-YYYYMMDD-HHMMSS[-label].json
+ *
+ * @param {object} snapshot
+ * @param {string} [label]  e.g. "before-reset"
+ * @returns {string}
+ */
+export function dumpFileName(snapshot, label = "") {
+  const d = new Date(snapshot.createdAt);
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const who = snapshot.redacted ? "redacted" : (serialOf(snapshot) ?? "unknown").replace(/[^A-Za-z0-9_-]/g, "_");
+  return `${who}-${stamp}${label ? `-${label}` : ""}.json`;
+}
+
+/**
+ * Write a snapshot to `dir` (created if needed), readable only by the
+ * owner since it may hold the PDF password.
+ *
+ * @param {object} snapshot
+ * @param {string} dir
+ * @param {string} [label]
+ * @returns {string} Path of the file written.
+ */
+export function saveSnapshot(snapshot, dir, label = "") {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, dumpFileName(snapshot, label));
+  fs.writeFileSync(file, JSON.stringify(snapshot, null, 2) + "\n", { mode: 0o600 });
+  return file;
+}
+
+/**
+ * The main-space bytes of a saved snapshot as a settings image
+ * (0x00 up to `end`), for restores. Throws if any byte is missing.
+ *
+ * @param {object} snapshot
+ * @param {number} end  Exclusive.
+ * @returns {Uint8Array}
+ */
+export function settingsImageOf(snapshot, end) {
+  if (snapshot?.format !== DUMP_FORMAT) {
+    throw new Error(`Not an rc5plus dump (format ${snapshot?.format ?? "missing"})`);
+  }
+  if (snapshot.redacted) {
+    throw new Error("A redacted dump can't be used: its serial, description and password are blank");
+  }
+  const bytes = bytesOf(snapshot.spaces.main);
+  const image = new Uint8Array(end);
+  for (let i = 0; i < end; i++) {
+    const b = bytes.get(i);
+    if (b === undefined) {
+      throw new Error(`The dump has no byte at 0x${i.toString(16)} (that block failed to read)`);
+    }
+    image[i] = b;
+  }
+  return image;
 }
 
 /**

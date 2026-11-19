@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/elitech/parameters.js
-// Version: 1.3.0
+// Version: 1.4.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // The subset of the RC-5+ parameter memory map this app reads or writes,
@@ -28,16 +28,18 @@ export const Param = Object.freeze({
   startMode: { offset: 0x20, length: 1 }, // bits 0..2
   temperatureUnit: { offset: 0x21, length: 1 }, // bit 3
   timezone: { offset: 0x24, length: 12 }, // hours in byte 0, minutes in byte 11
-  deviceState: { offset: 0x25, length: 1 }, // bits 0..6, see DeviceState
+  deviceState: { offset: 0x25, length: 1 }, // bits 0..5, see DeviceState
   stopMode: { offset: 0x26, length: 1 }, // bits 0..2, see StopMode
   batteryLevel: { offset: 0x27, length: 1 }, // bits 0..3
   configurationTime: { offset: 0x28, length: 7 },
   startTime: { offset: 0x30, length: 7 },
   stopTime: { offset: 0x38, length: 7 },
+  startDelay: { offset: 0x40, length: 2 },
   deviceCapacity: { offset: 0x42, length: 4 },
   recordNumber: { offset: 0x48, length: 2 },
   interval: { offset: 0x4c, length: 2 }, // units of 10 seconds
   deviceTime: { offset: 0x88, length: 7 },
+  description: { offset: 0x98, length: 100 },
   protocolVersion: { offset: 0x95, length: 1 },
 });
 
@@ -89,8 +91,81 @@ export const READ_BLOCKS = Object.freeze([
   { offset: 0x88, length: 14 },
 ]);
 
+// -----------------------------------------------------------------------------
+// Whole settings memory (used by resets and restores)
+// -----------------------------------------------------------------------------
+
 /**
- * Run state stored in bits 0..6 of byte 0x25.
+ * End (exclusive) of the settings memory the official software writes.
+ */
+export const SETTINGS_END = 0x13c + 0x19;
+
+/**
+ * The blocks the official software writes, in this order, when it
+ * configures a logger (python-elitech PRs #12/#14). Each fits one
+ * SetParameter frame (52 bytes maximum). 0x90..0x97 (capacity copy,
+ * protocol version, …) and 0xFC are never written.
+ *
+ * Why the app writes all of them, not just the fields it changes: on an
+ * RC-5+ TE (firmware 0x57, protocol 0x38) a reset that wrote only the
+ * interval and configuration time left almost every other setting erased
+ * after the Format (2026-11-19). The Format stores the logger's whole
+ * pending settings buffer, so every block must be written first.
+ */
+export const SETTINGS_WRITE_BLOCKS = Object.freeze([
+  { offset: 0x000, length: 0x30 },
+  { offset: 0x030, length: 0x30 },
+  { offset: 0x060, length: 0x30 },
+  { offset: 0x098, length: 0x34 },
+  { offset: 0x0cc, length: 0x30 },
+  { offset: 0x0fd, length: 0x2f },
+  { offset: 0x13c, length: 0x19 },
+]);
+
+/**
+ * Bits the logger sets itself, so they are not compared after a write.
+ * Offset -> mask of logger-owned bits.
+ *   0x25        run state (Format sets it to "configured")
+ *   0x26 0..2   how it last stopped
+ *   0x27 0..3   battery level
+ *   0x46..0x49  record counts (Format clears them)
+ *   0x86..0x87  the current temperature reading, in tenths (an RC-5+ TE
+ *               ignored a write here on 2026-11-19)
+ *   0x88..0x8E  the running clock
+ */
+export const LOGGER_OWNED_BITS = Object.freeze(new Map([
+  [0x25, 0xff],
+  [0x26, 0x07],
+  [0x27, 0x0f],
+  [0x46, 0xff], [0x47, 0xff], [0x48, 0xff], [0x49, 0xff],
+  [0x86, 0xff], [0x87, 0xff],
+  [0x88, 0xff], [0x89, 0xff], [0x8a, 0xff], [0x8b, 0xff],
+  [0x8c, 0xff], [0x8d, 0xff], [0x8e, 0xff],
+]));
+
+/**
+ * Offsets whose settings bits differ between what was written and what
+ * the logger holds, ignoring LOGGER_OWNED_BITS.
+ *
+ * @param {Uint8Array} expected  Settings image that was written (from 0x00).
+ * @param {Uint8Array} actual    Settings image read back (from 0x00).
+ * @returns {number[]}
+ */
+export function settingsMismatches(expected, actual) {
+  const bad = [];
+  for (const { offset, length } of SETTINGS_WRITE_BLOCKS) {
+    for (let i = offset; i < offset + length; i++) {
+      const mask = ~(LOGGER_OWNED_BITS.get(i) ?? 0) & 0xff;
+      if ((expected[i] & mask) !== (actual[i] & mask)) {
+        bad.push(i);
+      }
+    }
+  }
+  return bad;
+}
+
+/**
+ * Run state stored in bits 0..5 of byte 0x25.
  *
  * python-elitech master leaves this byte undecoded. The values come from
  * python-elitech issue #1 / PR #14 (RC-51H and RC-5+), and 0x04, 0x07 and
@@ -102,6 +177,9 @@ export const READ_BLOCKS = Object.freeze([
  *   0x09  stopped   (display shows "Stop" when unplugged), by button or
  *         by USB command; pressing stop again leaves it at 0x09
  * While plugged in the display always shows "USB", whatever the state.
+ * Bits 6 and 7 are ignored: python-elitech PR #14 reports the plain RC-5
+ * setting bit 6 (0x44, 0xC4, 0xC7), and an RC-5+ TE read 0xC4 after a
+ * Format (2026-11-19), the Format having set the low bits to 0x04.
  * Any other value is treated as unknown, and the app refuses to change
  * settings rather than guess.
  */
@@ -129,11 +207,11 @@ export const StopMode = Object.freeze({
 /**
  * Map the raw 0x25 value to a run state name.
  *
- * @param {number} state  Byte 0x25 masked to bits 0..6.
+ * @param {number} state  Byte 0x25 (bits 6 and 7 are ignored).
  * @returns {"ready"|"start-delay"|"recording"|"stopped"|"unknown"}
  */
 export function decodeRunState(state) {
-  switch (state) {
+  switch (state & 0x3f) {
     case DeviceState.Configured:
       return "ready";
     case DeviceState.StartDelay:
@@ -306,6 +384,20 @@ export function decodeShadowTimes(shadow) {
 }
 
 /**
+ * Does the settings memory look blank or damaged? True when the start mode
+ * or the time zone can't be decoded: both were 0xFF on the RC-5+ TE whose
+ * settings a partial reset erased, and both are always valid on a logger
+ * set up by the official software.
+ *
+ * @param {ParameterImage} image  Must include 0x20 and 0x24..0x2F.
+ * @returns {boolean}
+ */
+export function settingsLookErased(image) {
+  const startModeBits = image.get(Param.startMode)[0] & 0b111;
+  return !(startModeBits in START_MODES) || decodeTimezone(image.get(Param.timezone)) === null;
+}
+
+/**
  * Decode every field this app needs from an assembled parameter image.
  *
  * @param {ParameterImage} image
@@ -315,7 +407,7 @@ export function decodeShadowTimes(shadow) {
 export function decodeInfo(image, shadow = null) {
   const intervalUnits = decodeUnsigned(image.get(Param.interval));
   const startModeBits = image.get(Param.startMode)[0] & 0b111;
-  const deviceState = image.get(Param.deviceState)[0] & 0x7f;
+  const deviceState = image.get(Param.deviceState)[0];
 
   return {
     model: decodeUnsigned(image.get(Param.model)),
@@ -325,8 +417,9 @@ export function decodeInfo(image, shadow = null) {
     startMode: START_MODES[startModeBits] ?? `Unknown (${startModeBits})`,
     temperatureUnit: image.get(Param.temperatureUnit)[0] & 0b1000 ? "F" : "C",
     timezone: decodeTimezone(image.get(Param.timezone)),
-    deviceState,
+    deviceState, // the raw byte, for messages
     runState: decodeRunState(deviceState),
+    settingsErased: settingsLookErased(image),
     stopMode: image.get(Param.stopMode)[0] & 0b111,
     batteryLevel: image.get(Param.batteryLevel)[0] & 0x0f,
     configurationTime: decodeDateTime(image.get(Param.configurationTime)),
@@ -362,6 +455,25 @@ export function encodeInterval(seconds) {
     throw new RangeError(`Interval too large: ${seconds} s`);
   }
   return Uint8Array.of((units >> 8) & 0xff, units & 0xff);
+}
+
+/**
+ * Text to a NUL-padded ASCII field (description, travel number).
+ *
+ * @param {string} text
+ * @param {number} length  Field length in bytes.
+ * @returns {Uint8Array}
+ */
+export function encodeString(text, length) {
+  if (!/^[\x20-\x7e]*$/.test(text)) {
+    throw new RangeError("Only plain ASCII letters, digits and punctuation can be stored");
+  }
+  if (text.length > length) {
+    throw new RangeError(`Too long: at most ${length} characters`);
+  }
+  const out = new Uint8Array(length);
+  out.set(new TextEncoder().encode(text));
+  return out;
 }
 
 /**

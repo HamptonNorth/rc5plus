@@ -1,6 +1,6 @@
 {
   "name": "rc5plus-app",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Bun web app for the Elitech RC-5+ USB temperature logger on Linux: status, reset for a new trip (interval, clock, erase), CSV export and PDF report.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -11,7 +11,8 @@
     "mock": "RC5_MOCK=1 bun --watch src/server.js",
     "test": "bun test",
     "vectors": "python3 -I test/gen_vectors.py ../python-elitech > test/vectors.json",
-    "dump": "bun scripts/dump.js"
+    "dump": "bun scripts/dump.js",
+    "restore": "bun scripts/restore.js"
   },
   "dependencies": {
     "hono": "^4.13.19"

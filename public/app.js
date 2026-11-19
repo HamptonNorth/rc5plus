@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    public/app.js
-// Version: 1.3.0
+// Version: 1.4.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Browser side: polls for the logger, renders its details, and drives the
@@ -94,6 +94,12 @@ function stateWarning(info) {
     return `${what} To reset it, unplug it, press and hold its stop button until ` +
       "the display shows \"Stop\", then plug it back in and click Refresh.";
   }
+  if (info.settingsErased) {
+    return "This logger's settings look blank or damaged (start mode and time zone " +
+      "can't be read), so resetting is disabled: a reset would keep the damage. " +
+      "Restore its settings first (bun run restore, or the official ElitechLog " +
+      "software).";
+  }
   if (!CONFIGURABLE_STATES.includes(info.runState)) {
     return "The logger reports a state this app doesn't recognise, so changing settings " +
       "is disabled. Unplug it and check that the display shows \"Stop\", then plug it " +
@@ -106,10 +112,12 @@ function stateWarning(info) {
  * Enable or disable the action buttons for the current state:
  *   - nothing while another action is running
  *   - CSV export only when there are records
- *   - reset only when the logger is stopped (or already reset)
+ *   - reset only when the logger is stopped (or already reset) and its
+ *     settings don't look erased
  */
 function updateControls() {
-  const configurable = CONFIGURABLE_STATES.includes(currentInfo?.runState);
+  const configurable =
+    CONFIGURABLE_STATES.includes(currentInfo?.runState) && !currentInfo?.settingsErased;
   $("export-csv").disabled = busy || !currentInfo || currentInfo.recordCount === 0;
   $("reset-open").disabled = busy || !configurable;
 }
@@ -333,7 +341,7 @@ async function exportCsv() {
  * @param {Error & { code?: string }} err
  */
 async function refreshAfterRefusal(err) {
-  if (err.code === "NOT_STOPPED") {
+  if (err.code === "NOT_STOPPED" || err.code === "SETTINGS_ERASED") {
     await loadInfo().catch(() => {});
   }
 }

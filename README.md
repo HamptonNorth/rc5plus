@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.4.0
+  Version: 1.5.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -67,7 +67,7 @@ The protocol port matches python-elitech byte for byte. It has been checked on o
 
 1. **Read only.** Plug in the logger and open the page. Check that the serial number matches the label on the logger, and that the record count and interval match what ElitechLog or the PDF shows.
 2. **Export.** Click **Download CSV**. Compare a few rows with the PDF.
-3. **Reset**, only after steps 1–2 look right and you've exported anything you need. Pick the interval and click **Reset logger…**. The app checks the logger is stopped, writes the interval and the configuration time, then sends *Format*, which commits them, erases the readings and sets the clock. It then checks 0 records, the interval, the configuration time and the clock. The **State** row should then read "Ready, not started".
+3. **Reset**, only after steps 1–2 look right and you've exported anything you need. Pick the interval and click **Reset logger…**. The app checks the logger is stopped and that its settings look valid, and saves a full backup to `dumps/<serial>-<time>-before-reset.json`. It then writes back the logger's whole settings memory with the new interval and the current time, and sends *Format*, which commits them, erases the readings and sets the clock. Finally it checks every settings byte, 0 records and the clock. The **State** row should then read "Ready, not started".
 
 If anything misbehaves, the app reports the logger's error. ElitechLog in a Windows VM can still reset the logger.
 
@@ -86,8 +86,8 @@ Browser ──HTTP──▶ Hono (src/server.js)
 - **Detection** scans `/sys/class/hidraw` for VID `04d8` / PID `3005`, with no USB traffic. The page polls it every 2.5 s.
 - **Frames**: `33 CC 00 <len> <op lo> <op hi> 00 <off 15..8> <off 7..0> <off 23..16> <count> <payload…> <sum & 0xFF>`, zero-padded to 64 bytes.
 - **Records**: 8-byte little-endian packed words (time, temperature in tenths, flags), 6 per request.
-- **Run state** is byte `0x25`: `0x04` ready (reset, not started), `0x05` start delay, `0x07` recording, `0x09` stopped. A reset is allowed only when stopped or ready; anything else is refused.
-- **Settings** are committed by Format. The logger acknowledges a parameter write but keeps the old value until a Format follows, and Format erases the readings. Reset therefore writes the interval and configuration time, sends Format, then reads everything back.
+- **Run state** is bits 0..5 of byte `0x25`: `0x04` ready (reset, not started), `0x05` start delay, `0x07` recording, `0x09` stopped. A reset is allowed only when stopped or ready; anything else is refused.
+- **Settings** are committed by Format. The logger acknowledges a parameter write but keeps the old value until a Format follows, and Format erases the readings. Some loggers (an RC-5+ TE here) store only what was written since the last Format and erase the rest, so reset writes every settings block, like the official software, then Formats and reads everything back.
 - **Trip times** ("Recording started", "Last reading") come from the logger's second "shadow" memory space (read with operation `0x05`), because the RC-5+ never fills in the start/stop times in its main settings memory. This layout was worked out from one logger and is still being confirmed; if the shadow read fails, the rest of the info still loads.
 - **Times** are the logger's local wall-clock time. Clear writes this PC's local time.
 
@@ -97,7 +97,7 @@ Browser ──HTTP──▶ Hono (src/server.js)
 |---|---|---|---|
 | GET | `/api/status` | | `{ connected, devPath, mock }` |
 | GET | `/api/info` | | Serial number, settings, record count, clock |
-| POST | `/api/reset` | `{ "minutes": 1..15, "confirm": true }` | Info after reset (0 records), `409 NOT_STOPPED` or `502 NOT_APPLIED` |
+| POST | `/api/reset` | `{ "minutes": 1..15, "confirm": true }` | Info after reset (0 records), `409 NOT_STOPPED`, `409 SETTINGS_ERASED` or `502 NOT_APPLIED` |
 
 Any request that talks to the logger answers `423 BUSY` if another program (such as `bun run dump`) holds the device lock for more than 20 s.
 | GET | `/api/export.csv` | | CSV download (copy saved in `exports/`) |
@@ -123,6 +123,22 @@ Any request that talks to the logger answers `423 BUSY` if another program (such
 The dump **never writes to the logger**: it can only send read requests, and anything else is refused before it reaches the device. It doesn't mount the drive either. It shares a lock with the app, so the two never talk to the logger at the same time; if the app is busy, the dump waits.
 
 Saved dumps are only readable by you and are kept out of git (`dumps/`). They contain the serial number and description, and the PDF password if one is set, so use `--redact` before sharing one.
+
+
+## Restoring settings
+
+`bun run restore` rebuilds a logger's settings from a saved dump: one taken with `bun run dump --save`, or a `-before-reset` backup. Use it for a logger whose settings were erased (the app then shows "settings look blank or damaged" and won't reset it), or to undo a reset.
+
+| Command | What it does |
+|---|---|
+| `bun run restore --template dumps/A.json` | Dry run: reads the logger, saves a `-before-restore` backup, and lists every byte that would change. Writes nothing |
+| `bun run restore --template dumps/A.json --against dumps/B.json` | The same preview against a saved dump, with no logger attached |
+| `… --write` | Writes the settings, sends Format (**erases every reading**) and checks every byte |
+| `… --interval MIN` / `--description TEXT` | Change these on the way |
+| `… --keep LIST` | Bytes kept from the logger rather than the template (default `0x1e,0xfd-0x10c`, which differ between models; `none` keeps nothing extra). The model, serial number, state bytes, capacity and record counts are always kept |
+| `… --set 0x21=0x02` | Force one byte (repeatable) |
+
+The template must be from the same model. Only the fields the app itself uses are confirmed on hardware; the rest are python-elitech's names, so check the dry run before `--write`, and check the readings of the first trip afterwards.
 
 ## CSV format
 

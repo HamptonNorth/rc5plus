@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    test/rc5plus.test.js
-// Version: 1.3.0
+// Version: 1.4.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Exercises the high-level Rc5Plus operations and CSV export against the
@@ -22,7 +22,12 @@ import {
   ParameterImage,
   StopMode,
 } from "../src/elitech/parameters.js";
-import { NotAppliedError, NotStoppedError, Rc5Plus } from "../src/elitech/rc5plus.js";
+import {
+  NotAppliedError,
+  NotStoppedError,
+  Rc5Plus,
+  SettingsErasedError,
+} from "../src/elitech/rc5plus.js";
 import { recordsToCsv } from "../src/lib/csv.js";
 
 /** Fresh simulated logger + client for each test. */
@@ -143,7 +148,7 @@ describe("trip times from the shadow space", () => {
 });
 
 describe("resetForNewTrip", () => {
-  test("writes interval and clock, then Format, and never sends Stop", async () => {
+  test("writes every settings block, then Format, and never sends Stop", async () => {
     const { device, logger } = setup({ recordCount: 500, intervalSeconds: 120 });
     device.log.length = 0;
 
@@ -153,14 +158,91 @@ describe("resetForNewTrip", () => {
     const commands = device.log
       .filter((f) => !reads.includes(opOf(f)))
       .map((f) => [opOf(f), offsetOf(f)]);
+    // The official software's blocks, then the Format that commits them.
     expect(commands).toEqual([
-      [Operation.SetParameter, 0x4c], // interval
-      [Operation.SetParameter, 0x28], // configuration time
-      [Operation.Format, 0], // commits both, erases records
+      ...[0x00, 0x30, 0x60, 0x98, 0xcc, 0xfd, 0x13c].map((o) => [Operation.SetParameter, o]),
+      [Operation.Format, 0],
     ]);
+  });
 
-    const intervalWrite = device.log.find((f) => opOf(f) === Operation.SetParameter);
-    expect(Array.from(intervalWrite.slice(11, 13))).toEqual([0x00, 6]); // 60 s / 10
+  test("keeps every other setting: only interval and clock fields change", async () => {
+    const { device, logger } = setup({ recordCount: 50, intervalSeconds: 120 });
+    const before = await logger.readSettingsBytes();
+
+    const backups = [];
+    await logger.resetForNewTrip(1, new Date(), { onBackup: (b) => backups.push(b) });
+    const after = await logger.readSettingsBytes();
+
+    expect(backups.length).toBe(1);
+    expect(Array.from(backups[0])).toEqual(Array.from(before));
+
+    const changed = [];
+    for (let i = 0; i < before.length; i++) {
+      if (before[i] !== after[i]) changed.push(i);
+    }
+    const allowed = (i) =>
+      (i >= 0x25 && i <= 0x2e) || // state, stop mode, configuration time
+      (i >= 0x46 && i <= 0x4d) || // record counts, interval
+      (i >= 0x88 && i <= 0x8e); // clock
+    expect(changed.filter((i) => !allowed(i))).toEqual([]);
+    expect(new TextDecoder().decode(after.slice(0x98, 0xa3))).toBe("Mock fridge");
+  });
+
+  test("on an RC-5+ TE (Format erases unwritten settings) every setting survives", async () => {
+    const { device, logger } = setup({ keepsUnwrittenSettings: false, recordCount: 10 });
+    const before = await logger.readInfo();
+
+    const info = await logger.resetForNewTrip(2);
+
+    expect(info.settingsErased).toBe(false);
+    expect(info.startMode).toBe(before.startMode);
+    expect(info.timezone).toBe(before.timezone);
+    expect(info.intervalSeconds).toBe(120);
+    expect(info.runState).toBe("ready");
+  });
+
+  test("the simulator's TE mode reproduces the 2026-11-19 damage from a two-field write", async () => {
+    const { device, logger } = setup({ keepsUnwrittenSettings: false });
+    const { Param, encodeInterval } = await import("../src/elitech/parameters.js");
+
+    await logger.writeParameter(Param.interval, encodeInterval(60));
+    await logger.writeParameter(Param.configurationTime, encodeDateTime(new Date()));
+    await logger.sendCommand(Operation.Format);
+
+    const info = await logger.readInfo();
+    expect(info.settingsErased).toBe(true);
+    expect(info.timezone).toBe(null);
+    expect(info.intervalSeconds).toBe(60);
+    expect(device.memory[0x25]).toBe(0xc4);
+    expect(info.runState).toBe("ready");
+  });
+
+  test("ignores the live temperature reading at 0x86..0x87 when verifying", async () => {
+    // The RC-5+ TE kept its own reading there and ignored our write (2026-11-19).
+    const { device, logger } = setup({ ignoredOffsets: [0x86, 0x87] });
+    device.memory.set([0x00, 0xfe], 0x86);
+    const original = logger.readSettingsBytes.bind(logger);
+    let reads = 0;
+    logger.readSettingsBytes = async () => {
+      const bytes = await original();
+      if (reads++ === 0) bytes.set([0x01, 0x08], 0x86); // a different reading in the backup
+      return bytes;
+    };
+    const info = await logger.resetForNewTrip(1);
+    expect(info.runState).toBe("ready");
+  });
+
+  test("refuses to reset a logger whose settings look erased, writing nothing", async () => {
+    const { device, logger } = setup();
+    device.memory.fill(0xff, 0x20, 0x25); // start mode, sensor options, time zone hours
+    device.memory[0x2f] = 0xff;
+    device.log.length = 0;
+
+    const error = await logger.resetForNewTrip(1).catch((e) => e);
+    expect(error).toBeInstanceOf(SettingsErasedError);
+    const ops = device.log.map(opOf);
+    expect(ops).not.toContain(Operation.SetParameter);
+    expect(ops).not.toContain(Operation.Format);
   });
 
   test("leaves 0 records, the new interval and the clock set", async () => {
@@ -207,9 +289,20 @@ describe("resetForNewTrip", () => {
 
     const error = await logger.resetForNewTrip(1).catch((e) => e);
     expect(error).toBeInstanceOf(NotAppliedError);
-    expect(error.message).toBe(
-      "The logger acknowledged the reset but kept its interval at 2 min (asked for 1 min).",
-    );
+    expect(error.message).toContain("settings bytes read back differently");
+    expect(error.message).toContain("0x4d"); // interval low byte
+  });
+
+  test("names the bytes a logger would not keep, after writing them a second time", async () => {
+    // A logger that acknowledges but drops writes to the interval's low byte.
+    const { device, logger } = setup({ intervalSeconds: 120, ignoredOffsets: [0x4d] });
+    device.log.length = 0;
+
+    const error = await logger.resetForNewTrip(1).catch((e) => e);
+    expect(error).toBeInstanceOf(NotAppliedError);
+    expect(error.message).toContain("1 settings byte read back differently from what was written (0x4d)");
+    const writes = device.log.filter((f) => opOf(f) === Operation.SetParameter);
+    expect(writes.length).toBe(14); // all 7 blocks, Format, then all 7 again
   });
 
   test("reports records left behind by a Format", async () => {
@@ -273,6 +366,23 @@ describe("Run state guard (logger must be stopped)", () => {
 
     expect(decodeInfo(realImage(0x05, 0x18)).runState).toBe("start-delay");
     expect(decodeInfo(realImage(0x01, 0x18)).runState).toBe("unknown");
+  });
+
+  test("ignores bits 6 and 7 of the state byte (RC-5 and RC-5+ TE)", () => {
+    // 0xC4 was read from an RC-5+ TE after a Format; python-elitech PR #14
+    // lists 0x44 / 0xC4 / 0xC7 for the plain RC-5.
+    for (const [raw, name] of [[0x44, "ready"], [0xc4, "ready"], [0xc7, "recording"], [0x49, "stopped"]]) {
+      const info = decodeInfo(realImage(raw, 0x1b));
+      expect(info.runState).toBe(name);
+      expect(info.deviceState).toBe(raw);
+    }
+  });
+
+  test("flags blank settings (start mode and time zone unreadable)", () => {
+    expect(decodeInfo(realImage(0x09, 0x18)).settingsErased).toBe(false);
+    const image = realImage(0xc4, 0xfb);
+    image.add(0x20, Uint8Array.of(0xff, 0xff, 0xff, 0xf0, 0xff));
+    expect(decodeInfo(image).settingsErased).toBe(true);
   });
 
   test("simulator starts stopped by default", async () => {

@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    test/dump.test.js
-// Version: 1.0.0
+// Version: 1.0.2
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Tests for the read-only diagnostic dump (src/lib/dump.js) and the
@@ -40,6 +40,7 @@ const DEVICE = { devPath: "mock://rc5plus", usbDir: null };
 /** Simulated logger with a description and password set, plus a dump client. */
 function setup(options) {
   const logger = new MockRc5Plus({ serialNumber: "EF2400000042", ...options });
+  logger.memory.fill(0, 0x98, 0x98 + 100);
   logger.memory.set(new TextEncoder().encode("Fridge 3"), 0x98);
   logger.memory.set(new TextEncoder().encode("s3cr3t"), 0x80);
   const transport = new ReadOnlyTransport(new MockTransport(logger));
@@ -198,21 +199,21 @@ describe("diffSnapshots", () => {
     const before = await takeSnapshot(transport, DEVICE, { usb: false });
 
     logger.setRunState("recording"); // 0x25 09 -> 07, 0x26 low bits 0 -> 3
-    logger.memory[0x86] = 0x42; // an unmapped byte
+    logger.memory[0x8f] = 0x42; // an unmapped byte
     const after = await takeSnapshot(transport, DEVICE, { usb: false });
 
     const changes = diffSnapshots(before, after).filter((c) => c.field !== "device-time");
     expect(changes.map((c) => [c.offset, c.field])).toEqual([
       [0x25, "device-state"],
       [0x26, "stop-mode"],
-      [0x86, null],
+      [0x8f, null],
     ]);
 
     const text = formatChanges(changes, before, after).join("\n");
     expect(text).toContain("device-state: stopped → recording");
     expect(text).toContain("actual-stop-mode=0");
     expect(text).toContain("actual-stop-mode=3");
-    expect(text).toContain("0x086  00 → 42  (unmapped)");
+    expect(text).toContain("0x08f  00 → 42  (unmapped)");
   });
 
   test("clock-only changes are hidden from a watch, but kept with real changes", () => {
@@ -233,7 +234,7 @@ describe("diffSnapshots", () => {
   test("fieldAt finds the field covering a byte", () => {
     expect(fieldAt("main", 0x4d).name).toBe("interval");
     expect(fieldAt("main", 0xa0).name).toBe("description");
-    expect(fieldAt("main", 0x86)).toBe(null);
+    expect(fieldAt("main", 0x8f)).toBe(null);
     expect(fieldAt("shadow", 0x85).name).toBe("record-count?");
     expect(fieldAt("shadow", 0x12).name).toBe("last-record-time?");
   });

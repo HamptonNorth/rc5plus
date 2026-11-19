@@ -1,23 +1,34 @@
 // =============================================================================
 // File:    src/elitech/rc5plus.js
-// Version: 1.3.0
+// Version: 1.4.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // High-level RC-5+ operations built on a transport:
-//   - readInfo()         serial number, settings, record count, clock
-//   - resetForNewTrip()  set the interval and clock, erase records, verify
-//   - readRecords()      download every stored measurement
+//   - readInfo()            serial number, settings, record count, clock
+//   - resetForNewTrip()     set the interval and clock, erase records, verify
+//   - readSettingsBytes()   the whole settings memory, for backups/restores
+//   - applySettings()       write a whole settings image, Format, verify
+//   - readRecords()         download every stored measurement
 //
 // How the RC-5+ takes new settings (firmware 0x57, protocol 0x38, confirmed
-// on hardware on 2026-11-18, and matching python-elitech issue #1):
+// on hardware on 2026-11-18/19, and matching python-elitech issue #1):
 //   - SetParameter is always answered "accepted", but the logger only keeps
 //     the new values once a Format follows. A Format on its own, or a Format
 //     before the writes, changes nothing.
+//   - The Format stores the logger's whole pending settings buffer. On one
+//     RC-5+ that buffer held the current settings, so writing two fields
+//     was enough; on an RC-5+ TE it did not, and a two-field reset erased
+//     nearly every other setting. So, like the official software, we write
+//     every settings block before the Format, and check every byte after.
 //   - Format also erases every record. So any settings change erases the
 //     readings, which is why this module offers one "reset for a new trip"
 //     operation instead of separate "set interval" and "clear" ones.
 //   - Writing the configuration time (then Format) also sets the logger's
 //     clock, which settles within a few seconds.
+//
+// A reset is refused when the settings memory already looks erased:
+// copying damaged settings back would only make it permanent. Such a
+// logger needs `bun run restore` or the official software first.
 //
 // Changing settings is only allowed when the logger is stopped (by its own
 // button) or already reset and not started. Reading is always allowed.
@@ -52,6 +63,9 @@ import {
   Param,
   ParameterImage,
   READ_BLOCKS,
+  SETTINGS_END,
+  SETTINGS_WRITE_BLOCKS,
+  settingsMismatches,
 } from "./parameters.js";
 import { decodeRecord } from "./records.js";
 
@@ -72,6 +86,9 @@ const CLOCK_SETTLE_DELAY_MS = 1_000;
  * How far the logger's clock may differ from the time we set, in seconds.
  */
 const CLOCK_TOLERANCE_S = 10;
+
+/** Largest payload of one GetParameter frame. */
+const MAX_READ_LENGTH = 52;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -118,6 +135,22 @@ export class NotAppliedError extends Error {
   constructor(message) {
     super(message);
     this.name = "NotAppliedError";
+  }
+}
+
+/**
+ * Raised when a reset is attempted on a logger whose settings memory
+ * looks blank or damaged. The message is written for the end user.
+ */
+export class SettingsErasedError extends Error {
+  constructor() {
+    super(
+      "This logger's settings look blank or damaged (its start mode and time " +
+        "zone can't be read), so it was not reset: a reset would copy the " +
+        "damage. Restore its settings first (bun run restore, or the official " +
+        "ElitechLog software), then try again.",
+    );
+    this.name = "SettingsErasedError";
   }
 }
 
@@ -269,47 +302,69 @@ export class Rc5Plus {
   }
 
   /**
-   * Prepare the logger for a new trip: set the interval and the clock,
-   * erase every stored record, and verify the result.
+   * Read the whole settings memory, 0x00 up to SETTINGS_END.
    *
-   * Sequence:
-   *   1. Validate the interval, read the logger and check it may be changed
-   *      (stopped, or reset and not started).
-   *   2. Write the interval (2 bytes at 0x4C).
-   *   3. Write the configuration time = now (7 bytes at 0x28).
-   *   4. Format: commits steps 2 and 3, erases the records, sets the clock.
-   *   5. Verify: 0 records, interval and configuration time as written.
-   *   6. Wait for the clock to settle and verify it is within 10 s.
-   *
-   * The new interval applies from the next recording start.
-   *
-   * @param {number} minutes  Whole minutes, 1..15.
-   * @param {Date} [now]      Clock value to write (defaults to the current time).
-   * @returns {Promise<object>} Device info after the reset.
+   * @returns {Promise<Uint8Array>} Indexed by absolute offset.
    */
-  async resetForNewTrip(minutes, now = new Date()) {
-    if (
-      !Number.isInteger(minutes) ||
-      minutes < MIN_INTERVAL_MINUTES ||
-      minutes > MAX_INTERVAL_MINUTES
-    ) {
-      throw new RangeError(
-        `Interval must be a whole number of minutes between ` +
-          `${MIN_INTERVAL_MINUTES} and ${MAX_INTERVAL_MINUTES}`,
+  async readSettingsBytes() {
+    const bytes = new Uint8Array(SETTINGS_END);
+    for (let offset = 0; offset < SETTINGS_END; offset += MAX_READ_LENGTH) {
+      const length = Math.min(MAX_READ_LENGTH, SETTINGS_END - offset);
+      bytes.set(await this.readParameterBytes(offset, length), offset);
+    }
+    return bytes;
+  }
+
+  /**
+   * Write every settings block from `image` (see SETTINGS_WRITE_BLOCKS).
+   * Held by the logger until a Format.
+   *
+   * @param {Uint8Array} image  Indexed by absolute offset, SETTINGS_END long.
+   */
+  async writeSettingsBlocks(image) {
+    for (const block of SETTINGS_WRITE_BLOCKS) {
+      await this.writeParameter(block, image.slice(block.offset, block.offset + block.length));
+    }
+  }
+
+  /**
+   * Store a complete settings image: write every block, Format (which
+   * erases every record), then check that every settings byte reads back
+   * as written. If not, write every block once more, as the official
+   * software does after a Format (python-elitech PR #14), and check again.
+   *
+   * Callers must have checked the logger may be changed (assertConfigurable)
+   * and kept a backup. The configuration time in `image` also sets the clock.
+   *
+   * @param {Uint8Array} image  Full settings image (from readSettingsBytes,
+   *   patched). The configuration time should be `now`.
+   * @param {Date} now          The time written as configuration time.
+   * @returns {Promise<object>} Device info after the clock has settled.
+   */
+  async applySettings(image, now) {
+    if (image.length !== SETTINGS_END) {
+      throw new RangeError(`Settings image must be ${SETTINGS_END} bytes, got ${image.length}`);
+    }
+    const startedAt = Date.now();
+
+    await this.writeSettingsBlocks(image);
+    await this.sendCommand(Operation.Format, FORMAT_TIMEOUT_MS);
+
+    let bad = settingsMismatches(image, await this.readSettingsBytes());
+    if (bad.length > 0) {
+      await this.writeSettingsBlocks(image);
+      bad = settingsMismatches(image, await this.readSettingsBytes());
+    }
+    if (bad.length > 0) {
+      const where = bad.slice(0, 8).map((o) => `0x${o.toString(16).padStart(2, "0")}`).join(", ");
+      throw new NotAppliedError(
+        `The logger was formatted, but ${bad.length} settings ` +
+          `${bad.length === 1 ? "byte" : "bytes"} read back ` +
+          `differently from what was written (${where}${bad.length > 8 ? ", …" : ""}). ` +
+          `A backup of the settings from before this change is in the dumps folder.`,
       );
     }
 
-    // 1. Refuse to touch a logger that is recording or in an unknown state.
-    assertConfigurable(await this.readInfo());
-
-    // 2..4. Write the settings, then Format to commit them.
-    const configTime = encodeDateTime(now);
-    const startedAt = Date.now();
-    await this.writeParameter(Param.interval, encodeInterval(minutes * 60));
-    await this.writeParameter(Param.configurationTime, configTime);
-    await this.sendCommand(Operation.Format, FORMAT_TIMEOUT_MS);
-
-    // 5. Check the logger kept what we wrote.
     let info = await this.readInfo();
     if (info.recordCount !== 0) {
       throw new NotAppliedError(
@@ -317,21 +372,14 @@ export class Rc5Plus {
           `${info.recordCount} records.`,
       );
     }
-    if (info.intervalSeconds !== minutes * 60) {
+    if (info.runState !== "ready") {
       throw new NotAppliedError(
-        `The logger acknowledged the reset but kept its interval at ` +
-          `${info.intervalSeconds / 60} min (asked for ${minutes} min).`,
-      );
-    }
-    const expectedConfigTime = decodeDateTime(configTime);
-    if (info.configurationTime !== expectedConfigTime) {
-      throw new NotAppliedError(
-        `The logger acknowledged the reset but its configuration time reads ` +
-          `${info.configurationTime ?? "blank"} (expected ${expectedConfigTime}).`,
+        `The reset did not complete: the logger reports state ` +
+          `0x${info.deviceState.toString(16).padStart(2, "0")} instead of ready.`,
       );
     }
 
-    // 6. The clock takes a moment to pick up the new time.
+    // The clock takes a moment to pick up the new time.
     for (let attempt = 1; ; attempt++) {
       const expected = now.getTime() + (Date.now() - startedAt);
       const actual = parseDeviceTime(info.deviceTime);
@@ -347,6 +395,79 @@ export class Rc5Plus {
       await sleep(CLOCK_SETTLE_DELAY_MS);
       info = await this.readInfo();
     }
+  }
+
+  /**
+   * Prepare the logger for a new trip: set the interval and the clock,
+   * erase every stored record, keep every other setting, and verify.
+   *
+   * Sequence:
+   *   1. Validate the interval. Read the logger and check it may be changed
+   *      (stopped, or reset and not started) and that its settings don't
+   *      look erased.
+   *   2. Read the whole settings memory and hand it to `onBackup`, which
+   *      must save it before anything is written.
+   *   3. Patch the interval, configuration time and device time = now.
+   *   4. applySettings(): write every block, Format, verify every byte,
+   *      0 records, ready, and the clock within 10 s.
+   *
+   * The new interval applies from the next recording start.
+   *
+   * @param {number} minutes  Whole minutes, 1..15.
+   * @param {Date} [now]      Clock value to write (defaults to the current time).
+   * @param {object} [options]
+   * @param {(settings: Uint8Array) => Promise<void>|void} [options.onBackup]
+   *   Called with the settings read in step 2, before any write.
+   * @returns {Promise<object>} Device info after the reset.
+   */
+  async resetForNewTrip(minutes, now = new Date(), { onBackup } = {}) {
+    if (
+      !Number.isInteger(minutes) ||
+      minutes < MIN_INTERVAL_MINUTES ||
+      minutes > MAX_INTERVAL_MINUTES
+    ) {
+      throw new RangeError(
+        `Interval must be a whole number of minutes between ` +
+          `${MIN_INTERVAL_MINUTES} and ${MAX_INTERVAL_MINUTES}`,
+      );
+    }
+
+    // 1. Refuse to touch a logger that is recording, in an unknown state,
+    //    or whose settings are already damaged.
+    const before = await this.readInfo();
+    assertConfigurable(before);
+    if (before.settingsErased) {
+      throw new SettingsErasedError();
+    }
+
+    // 2. Keep a copy of everything we are about to rewrite.
+    const image = await this.readSettingsBytes();
+    if (onBackup) {
+      await onBackup(image.slice());
+    }
+
+    // 3. Change only the interval and the two clock fields.
+    const clock = encodeDateTime(now);
+    image.set(encodeInterval(minutes * 60), Param.interval.offset);
+    image.set(clock, Param.configurationTime.offset);
+    image.set(clock, Param.deviceTime.offset);
+
+    // 4. Write it all, Format, verify.
+    const info = await this.applySettings(image, now);
+    if (info.intervalSeconds !== minutes * 60) {
+      throw new NotAppliedError(
+        `The logger acknowledged the reset but kept its interval at ` +
+          `${info.intervalSeconds / 60} min (asked for ${minutes} min).`,
+      );
+    }
+    const expectedConfigTime = decodeDateTime(clock);
+    if (info.configurationTime !== expectedConfigTime) {
+      throw new NotAppliedError(
+        `The logger acknowledged the reset but its configuration time reads ` +
+          `${info.configurationTime ?? "blank"} (expected ${expectedConfigTime}).`,
+      );
+    }
+    return info;
   }
 
   /**

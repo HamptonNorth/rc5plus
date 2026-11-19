@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    src/server.js
-// Version: 1.3.0
+// Version: 1.4.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Hono HTTP server: JSON API for the logger plus the static web UI.
@@ -9,7 +9,8 @@
 //   GET  /api/info              serial number, settings, record count
 //   POST /api/reset             { minutes: 1..15, confirm: true }
 //                               new trip: set interval + clock, erase records
-//                               (logger must be stopped or already reset)
+//                               (logger must be stopped or already reset);
+//                               a full dump is saved to dumps/ first
 //   GET  /api/export.csv        download all records as CSV (copy kept in exports/)
 //   GET  /api/pdfs              list PDF reports on the logger's USB drive
 //   GET  /api/pdfs/:name        view a PDF (?download=1 to save it)
@@ -32,8 +33,9 @@ import { csvFileName, recordsToCsv } from "./lib/csv.js";
 import { LoggerService, NotConnectedError } from "./lib/logger-service.js";
 import { TransportError } from "./elitech/hidraw.js";
 import { FrameError } from "./elitech/frame.js";
-import { NotAppliedError, NotStoppedError } from "./elitech/rc5plus.js";
+import { NotAppliedError, NotStoppedError, SettingsErasedError } from "./elitech/rc5plus.js";
 import { DeviceBusyError } from "./lib/device-lock.js";
+import { saveSnapshot, takeSnapshot } from "./lib/dump.js";
 
 const PORT = Number(process.env.PORT ?? 3005);
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -41,6 +43,7 @@ const MOCK = process.env.RC5_MOCK === "1";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const EXPORT_DIR = path.join(ROOT, "exports");
+const DUMP_DIR = path.join(ROOT, "dumps");
 
 const service = new LoggerService({ mock: MOCK });
 const app = new Hono();
@@ -59,6 +62,9 @@ app.onError((err, c) => {
       { error: err.message, code: "NOT_STOPPED", runState: err.runState, deviceState: err.deviceState },
       409,
     );
+  }
+  if (err instanceof SettingsErasedError) {
+    return c.json({ error: err.message, code: "SETTINGS_ERASED" }, 409);
   }
   if (err instanceof DeviceBusyError) {
     // 423 Locked: another program (e.g. `bun run dump`) is using the logger.
@@ -104,7 +110,18 @@ app.post("/api/reset", async (c) => {
     );
   }
   const minutes = Number(body.minutes);
-  const info = await service.withLogger((logger) => logger.resetForNewTrip(minutes));
+  const info = await service.withLogger((logger, device) =>
+    logger.resetForNewTrip(minutes, new Date(), {
+      // A full dump (settings and shadow) before anything is written, so a
+      // reset that goes wrong can be undone with `bun run restore`.
+      onBackup: async () => {
+        if (MOCK) return;
+        const snapshot = await takeSnapshot(logger.transport, device, { shadow: true });
+        const file = saveSnapshot(snapshot, DUMP_DIR, "before-reset");
+        console.log(`Saved settings backup ${path.relative(ROOT, file)}`);
+      },
+    }),
+  );
   return c.json(info);
 });
 
