@@ -28,7 +28,9 @@ Features:
   - [ ] Starting a trip after a reset and reading the new records (not yet done)
   - [x] RC-5+ TE (2026-11-19): the two-field reset erased nearly every other setting (Format stored a buffer that only held our two writes); state then read `0xC4`. Fixed by writing every settings block before Format (v1.5.0)
   - [x] `bun run restore --write` on the RC-5+ TE (2026-11-19) from logger 1's dump: every byte stuck except `0x86..0x87`, which turned out to be the live temperature reading (tenths), now logger-owned
-  - [ ] Full-block reset via the app on real hardware (not yet run)
+  - [x] Full-block reset via the app on the RC-5+ TE (2026-11-19)
+  - [x] Full-block reset via the app on the plain RC-5+ (logger 1, 2026-11-19): main-space diff against the `-before-reset` dump showed only state, stop mode, configuration time, record count, clock and live temperature
+  - [ ] Shadow `0x90`/`0x98`/`0xA0` (2 bytes each) look like trip temperature statistics in tenths (`0x00F7` 24.7, `0x00DE` 22.2, `0x00E0` 22.4 after a 16-record trip; `0x0FA0` = unset after a reset). Unconfirmed: which is max/min/mean
   - [x] TE sensor setting: restored with `0x21 = 0x00` (copied from logger 1); readings follow the external probe (2026-11-19). So `0x21` bit 1 doesn't select the TE's probe; `0x1E = 02` (kept from the TE) probably marks the model
 
 ## Commands
