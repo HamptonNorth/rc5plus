@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.6.0
+  Version: 1.6.1
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -161,6 +161,31 @@ bun test
 # Includes tests for the dump's read-only guard, redaction, diff and the device lock.
 ```
 
-## Licence
+## Acknowledgements
 
-GPL-3.0-or-later. See `LICENSE`. Protocol knowledge © 2023 Pascal Combes (python-elitech).
+This app is based on [python-elitech](https://github.com/pasccom/python-elitech) by **Pascal Combes**. He worked out the Elitech logger protocol by reverse engineering the official Windows software with Ghidra. That covers the HID frame format, the operation codes, the parameter memory map and the packed record format. This app's protocol code (`src/elitech/frame.js`, `parameters.js`, `records.js`, `rc5plus.js`) is a JavaScript port of his Python code, and its tests are checked against vectors generated from his library. None of this app would exist without his investigations.
+
+Thanks also to the contributors to python-elitech's issues and pull requests, especially **honx** (PRs #12–#14). Those PRs document the official software's full settings write and reset sequence, the "shadow" memory space and the run-state values. They are what made the RC-5+ and RC-5+ TE reset in this app work.
+
+What this app adds was found on real RC-5+ and RC-5+ TE loggers (firmware `0x57`, protocol `0x38`) and is recorded in `CLAUDE.md`:
+- settings only stick after a Format, and the whole settings block must be written first
+- where the real trip times live in shadow memory
+- the live temperature reading at `0x86`
+
+## Licensing information
+
+*rc5plus-app* is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+*rc5plus-app* is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with *rc5plus-app*. If not, see <https://www.gnu.org/licenses/>.
+
+*rc5plus-app* is a derived work of *python-elitech*, Copyright © 2023 Pascal Combes,
+which is licensed under the same terms (GPL-3.0-or-later). The full licence text is in `LICENSE`.
