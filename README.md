@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.8.1
+  Version: 1.8.2
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -13,9 +13,9 @@ A Bun web app for the **Elitech RC-5+** USB temperature logger on Linux. No Elit
 - Lets you view and download the PDF report from the logger's USB drive
 - Exports every reading to CSV
 
-<a href="docs/images/rc5plus-app.png"><img src="docs/images/rc5plus-app.png" alt="The rc5plus-app page for a stopped RC-5+ TE: serial number, status, CSV export, the logger's PDF report, and the reset form" width="480"></a>
+<a href="docs/images/rc5plus-app.png"><img src="docs/images/rc5plus-app-thumb.png" alt="The rc5plus-app page for a stopped RC-5+ TE: serial number, status, CSV export, the logger's PDF report, and the reset form" width="412"></a>
 
-*The app with an RC-5+ TE plugged in (serial number blurred). Click the image for full size.*
+*The app with an RC-5+ TE plugged in (serial number partly blurred). Click the image for full size.*
 
 The HID protocol is a JavaScript port of [python-elitech](https://github.com/pasccom/python-elitech) by Pascal Combes, which was reverse-engineered from the official software and tested on an RC-5+. Because it is a derived work, this app is licensed **GPL-3.0-or-later**.
 
