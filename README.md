@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.8.2
+  Version: 1.8.3
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -395,3 +395,7 @@ along with *rc5plus-app*. If not, see <https://www.gnu.org/licenses/>.
 
 *rc5plus-app* is a derived work of *python-elitech*, Copyright © 2023 Pascal Combes,
 which is licensed under the same terms (GPL-3.0-or-later). The full licence text is in `LICENSE`.
+
+## Regulated use
+
+*rc5plus-app* is an independent project, not made or endorsed by Elitech, and it has not been validated for any regulated purpose. If your logger records temperatures for compliance, for example a vaccine or pharmacy fridge, food safety, or GDP/GMP storage, check with your quality lead or auditor before using it. They may expect loggers to be set up with the manufacturer's software, or need proof that the setup software has been validated. Resetting a logger erases its readings, so export the CSV and keep the logger's own PDF report before every reset.
