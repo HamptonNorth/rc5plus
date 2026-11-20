@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   File:    public/index.html
-  Version: 1.4.0
+  Version: 1.5.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   GPL-3.0-or-later. See LICENSE.
 -->
@@ -29,7 +29,13 @@
       <p>Plug the Elitech RC-5+ into a USB port. This page updates by itself.</p>
     </section>
 
-    <!-- Shown when a logger is connected -->
+    <!-- Shown while a just-connected logger is being read (retries by itself) -->
+    <section id="loading" class="card empty" hidden>
+      <h1>Reading the logger…</h1>
+      <p id="loading-detail" class="muted">This takes a moment after plugging it in.</p>
+    </section>
+
+    <!-- Shown once the logger has been read -->
     <div id="connected" hidden>
       <section class="card identity">
         <div>

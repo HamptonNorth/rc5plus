@@ -1,6 +1,6 @@
 // =============================================================================
 // File:    public/app.js
-// Version: 1.5.0
+// Version: 1.6.0
 // Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 //
 // Browser side: polls for the logger, renders its details, and drives the
@@ -11,6 +11,16 @@
 // =============================================================================
 
 const POLL_MS = 2500;
+/**
+ * After a plug-in, the logger shows up in /sys before Linux has finished
+ * setting it up (permissions, USB configuration), so the first read can
+ * fail. Wait this long before the first read, then retry on every poll.
+ */
+const SETTLE_MS = 1500;
+/** Failed reads before the error is shown (retrying carries on). */
+const SHOW_ERROR_AFTER = 3;
+/** How long to keep looking for the USB drive, which mounts after the logger appears. */
+const PDF_RETRY_MS = 30_000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,6 +30,12 @@ let currentInfo = null;
 let wasConnected = null;
 /** Pause polling while an action is talking to the logger. */
 let busy = false;
+/** Failed info reads since the logger was connected. */
+let infoFailures = 0;
+/** When the current connection started (ms), for the PDF retry window. */
+let connectedAt = 0;
+/** True until the USB drive has been found for this connection. */
+let pdfsPending = false;
 
 // -----------------------------------------------------------------------------
 // API helper
@@ -133,8 +149,24 @@ function renderConnection(status) {
     pill.textContent = "Not connected";
     pill.className = "pill pill-off";
   }
-  $("connected").hidden = !status.connected;
-  $("empty").hidden = status.connected;
+}
+
+/**
+ * Show one of: "no logger", "reading the logger…", or the logger's details.
+ * The details only appear once they have been read, so the page is never
+ * blank or showing a previous logger.
+ *
+ * @param {boolean} connected
+ */
+function showSection(connected) {
+  $("empty").hidden = connected;
+  $("loading").hidden = !connected || currentInfo !== null;
+  $("connected").hidden = !connected || currentInfo === null;
+}
+
+/** Text under "Reading the logger…". */
+function setLoadingDetail(text) {
+  $("loading-detail").textContent = text;
 }
 
 /** Fill in the identity and status cards. */
@@ -237,16 +269,44 @@ async function loadInfo() {
   renderInfo(await response.json());
 }
 
-async function loadPdfs() {
+/**
+ * @param {{ waiting?: boolean }} [options] - waiting: the drive may still be
+ *   mounting, so say so rather than reporting it missing.
+ */
+async function loadPdfs({ waiting = false } = {}) {
   try {
     const response = await api("/api/pdfs");
-    renderPdfs(await response.json());
+    const result = await response.json();
+    renderPdfs(result);
+    pdfsPending = !result.mountPoint;
+    if (pdfsPending && waiting) {
+      setResult("pdf-result", "Waiting for the logger's USB drive to appear…");
+    }
   } catch (err) {
     setResult("pdf-result", err.message, "err");
   }
 }
 
-/** Reload everything after a (re)connect or a manual refresh. */
+/**
+ * Try to read a just-connected logger. On failure, leave currentInfo null
+ * so the next poll tries again; show the reason once it keeps failing.
+ */
+async function tryLoadInfo() {
+  try {
+    await loadInfo();
+    infoFailures = 0;
+  } catch (err) {
+    infoFailures += 1;
+    if (infoFailures >= SHOW_ERROR_AFTER) {
+      setLoadingDetail(`${err.message} Still trying…`);
+    }
+  }
+}
+
+/** Wait `ms` milliseconds. */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Reload everything when the Refresh button is clicked. */
 async function loadAll() {
   try {
     await loadInfo();
@@ -267,24 +327,45 @@ function clearActionResults() {
   setResult("reset-result", "");
 }
 
-/** Poll for plug/unplug and reload when the state changes. */
+/**
+ * Poll for plug/unplug. After a connect, keep trying to read the logger
+ * until it answers, and keep looking for its USB drive for a while.
+ */
 async function poll() {
   if (!busy) {
     try {
       const status = await (await fetch("/api/status")).json();
       renderConnection(status);
-      if (status.connected && wasConnected !== true) {
-        // Just plugged in (or page just opened): start from a clean slate.
-        clearActionResults();
-        await loadAll();
-      }
-      if (!status.connected && wasConnected !== false) {
+      if (status.connected) {
+        if (wasConnected !== true) {
+          // Just plugged in (or page just opened): start from a clean slate.
+          currentInfo = null;
+          infoFailures = 0;
+          connectedAt = Date.now();
+          pdfsPending = true;
+          clearActionResults();
+          setResult("pdf-result", "");
+          $("pdf-list").replaceChildren();
+          setLoadingDetail("This takes a moment after plugging it in.");
+          showSection(true);
+          // Plugged in just now (not on page load): let Linux finish first.
+          if (wasConnected === false) await sleep(SETTLE_MS);
+        }
+        if (currentInfo === null) await tryLoadInfo();
+        if (currentInfo !== null && pdfsPending) {
+          // Keep looking for a while; after that, show why it's missing.
+          await loadPdfs({ waiting: Date.now() - connectedAt < PDF_RETRY_MS });
+          if (Date.now() - connectedAt >= PDF_RETRY_MS) pdfsPending = false;
+        }
+      } else if (wasConnected !== false) {
         // Just unplugged: drop everything that described the old session.
         currentInfo = null;
+        pdfsPending = false;
         clearActionResults();
         $("pdf-viewer-card").hidden = true;
         $("pdf-viewer").removeAttribute("src");
       }
+      showSection(status.connected);
       wasConnected = status.connected;
     } catch {
       $("connection").textContent = "App server not reachable";

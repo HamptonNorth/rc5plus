@@ -1,6 +1,6 @@
 <!--
   File:    CLAUDE.md
-  Version: 1.8.0
+  Version: 1.8.1
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   Purpose: Handover context for Claude Code (Zed agent panel / CLI)
 -->
@@ -20,7 +20,7 @@ Features:
 ## Status
 
 - v1.8.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
-- 313 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
+- 318 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
 - Hardware verification checklist (README "First run on a real logger"):
   - [x] Serial number and record count match the logger and the PDF (2026-11-18)
   - [x] CSV rows match the logger's own CSV report exactly (2026-11-18, 4 rows)
@@ -84,6 +84,7 @@ test/
   dump.test.js              read-only guard, dump, redaction, diff, device lock
   paths.test.js             data directory choice, embedded UI file list
   server.test.js            HTTP layer on a real Bun.serve (port 0) against the simulator; error mapping
+  ui-connect.test.js        public/app.js connect flow with a fake DOM, timers and scripted API
 60-elitech-rc5plus.rules    udev rule
 ```
 
@@ -183,6 +184,7 @@ Error mapping in `app.js` (`errorResponse`): NotConnected → 404, DeviceBusy �
 - `RC5_MOCK_STATE=recording` (or `ready`) starts the simulator in that state, to try out the state checks. The simulator holds writes until a Format, like the hardware.
 - References: python-elitech issue #1 (RC-5+ writes ignored), PRs #12–#14 by honx (full config write, reset sequence, `doc/RC-5.md` protocol notes from the official software).
 - Interval changes take effect from the next recording start.
+- Plug-in race: the hidraw node appears in /sys (so `/api/status` says connected) before the uaccess ACL and USB setup are done, so the first `/api/info` can fail; the mass-storage drive mounts later still. The page shows "Reading the logger…", waits `SETTLE_MS` (1.5 s) after a plug-in, retries the info read on every poll (reason shown after 3 failures), and retries `/api/pdfs` for 30 s. Before v1.8.1 one failed read left a blank page until a manual refresh.
 - No HTTP framework (Hono removed in v1.8.0, user's decision 2026-11-20): Bun.serve's built-in `routes` (Bun ≥ 1.2.3). `req.params` arrive URL-decoded; a method missing from a route's `{ GET, POST }` object falls through to `fetch`, which answers 405 with `Allow`; errors thrown in a handler go to `error` → `errorResponse()`. Keep it dependency-free unless told otherwise.
 
 ## Possible next steps
