@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.7.0
+  Version: 1.7.1
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -18,14 +18,200 @@ The HID protocol is a JavaScript port of [python-elitech](https://github.com/pas
 ## Requirements
 
 - Linux. The app uses `/dev/hidraw*` and `/sys`.
-- Bun 1.1 or newer
+- Bun 1.1 or newer (only to run from source or build the binary)
 - `udisks2` (`udisksctl`), which is standard on Kubuntu/KDE. It's only used to mount the PDF drive if the desktop hasn't already mounted it.
 
-## Install
+## Step-by-step installation (for beginners)
+
+This guide assumes you've never used the Linux terminal much. It was written on **Kubuntu**; it works the same way on Ubuntu, Linux Mint and other Ubuntu or Debian-based systems. Other systems are noted where a command differs.
+
+You'll need:
+- the Linux PC the logger will be plugged into, connected to the internet
+- your password for that PC (some steps install software and ask for it)
+- the RC-5+ logger (only needed from step 7 onwards)
+
+It takes about 10 minutes.
+
+### 1. Open a terminal
+
+The terminal is a window where you type commands.
+
+- **Kubuntu:** press **Ctrl+Alt+T**, or open the application menu and search for **Konsole**.
+- **Ubuntu / Mint:** press **Ctrl+Alt+T**, or search for **Terminal**.
+
+Some tips before you start:
+- Copy each command from this page and paste it into the terminal with **Ctrl+Shift+V** (plain Ctrl+V doesn't work in most terminals), then press **Enter**.
+- Run one grey box at a time, and wait until the terminal is ready for more input before the next one.
+- Text after a `#` is a comment for you to read. Pasting it is harmless.
+- When a command starts with `sudo`, it asks for your password. **Nothing appears as you type it**, not even dots. This is normal: type it and press Enter.
+- If a command asks `Do you want to continue? [Y/n]`, type `y` and press Enter.
+
+### 2. Install the basic tools
+
+These are the tools for downloading the app (`git`, `curl`, `unzip`) and for opening the logger's USB drive (`udisks2`, normally already there).
+
+Ubuntu, Kubuntu, Mint or Debian:
+
+```bash
+sudo apt update
+sudo apt install git curl unzip udisks2
+```
+
+On Fedora, use `sudo dnf install git curl unzip udisks2` instead.
+
+### 3. Install Bun
+
+[Bun](https://bun.sh) runs the app. It installs into a folder in your home directory (`~/.bun`), and doesn't need your password:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+**Close the terminal window and open a new one** so it finds Bun, then check that it worked:
+
+```bash
+bun --version
+```
+
+This should print a version number, such as `1.4.4`. If it says `bun: command not found`, see [Troubleshooting](#troubleshooting).
+
+### 4. Download the app
+
+This puts the app in a folder called `rc5plus-app` in your home folder:
+
+```bash
+cd ~
+git clone https://github.com/HamptonNorth/rc5plus.git rc5plus-app
+cd rc5plus-app
+bun install
+```
+
+`bun install` downloads the one library the app uses (Hono). It takes a few seconds and should finish without any `error` lines.
+
+### 5. Let your user account use the logger
+
+Linux doesn't let ordinary programs talk to USB devices like the logger by default. The file `60-elitech-rc5plus.rules`, which comes with the app, gives the user logged in at the desktop access to the RC-5+, and to no other device. Copy it into place and tell Linux to reload its rules:
+
+```bash
+cd ~/rc5plus-app
+sudo cp 60-elitech-rc5plus.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+You only do this once. If the logger is already plugged in, unplug it and plug it back in.
+
+### 6. Try the app without a logger (optional)
+
+The app has a built-in pretend logger, so you can look around without changing anything real:
+
+```bash
+cd ~/rc5plus-app
+bun run mock
+```
+
+The terminal shows `RC-5+ app … on http://127.0.0.1:3005`. Open your web browser (Firefox, Chrome, etc.) and go to **http://127.0.0.1:3005**. You'll see a pretend logger called "Mock fridge".
+
+To stop the app, click the terminal window and press **Ctrl+C**.
+
+### 7. Run the app with your logger
+
+1. Plug the logger into a USB port.
+2. In the terminal, run:
+
+   ```bash
+   cd ~/rc5plus-app
+   bun start
+   ```
+
+3. Open **http://127.0.0.1:3005** in your browser. After a couple of seconds the page shows the logger's serial number and status.
+
+**Keep the terminal window open** while you use the app; closing it stops the app. When you've finished, press **Ctrl+C** in the terminal, or just close the window.
+
+Before you reset a real logger, read [First run on a real logger](#first-run-on-a-real-logger). A reset **erases every reading** on the logger, so download the CSV and the PDF first.
+
+Where your files go:
+- **Download CSV** saves the file to your browser's Downloads folder, and keeps a copy in `~/rc5plus-app/exports/`.
+- Before each reset, the app saves a backup of the logger's settings in `~/rc5plus-app/dumps/`. Keep these: they can undo a reset that goes wrong (see [Restoring settings](#restoring-settings)).
+
+### 8. Add the app to your application menu (optional)
+
+This turns the app into a single program file and adds a menu entry, so you can start it without typing commands. It also opens the browser for you.
+
+First build the program and copy it to your personal programs folder, `~/.local/bin`:
+
+```bash
+cd ~/rc5plus-app
+bun run build
+mkdir -p ~/.local/bin
+install -m 755 dist/rc5plus-app ~/.local/bin/
+```
+
+Then create the menu entry. Copy and paste this whole box in one go:
+
+```bash
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/rc5plus-app.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=RC-5+ Logger
+Comment=Elitech RC-5+ temperature logger: status, reset, CSV and PDF
+Exec=sh -c "(sleep 2; xdg-open http://127.0.0.1:3005) & exec $HOME/.local/bin/rc5plus-app"
+Icon=utilities-system-monitor
+Terminal=true
+Categories=Utility;
+EOF
+```
+
+**RC-5+ Logger** now appears in the application menu (on Kubuntu, under **Utilities**, or search for it). It opens a terminal window that runs the app, and then opens the app in your browser. Close that terminal window to stop the app.
+
+The installed program saves its files in a different place from step 7: CSV copies go to `~/.local/share/rc5plus-app/exports/` and backups to `~/.local/share/rc5plus-app/dumps/`. To see these in the Dolphin file manager, press **Ctrl+H** to show hidden folders, or type `~/.local/share/rc5plus-app` in the address bar.
+
+### Updating to a newer version
+
+```bash
+cd ~/rc5plus-app
+git pull
+bun install
+```
+
+If you did step 8, also rebuild the program and copy it again:
+
+```bash
+bun run build
+install -m 755 dist/rc5plus-app ~/.local/bin/
+```
+
+### Uninstalling
+
+```bash
+rm -f ~/.local/bin/rc5plus-app ~/.local/share/applications/rc5plus-app.desktop
+sudo rm -f /etc/udev/rules.d/60-elitech-rc5plus.rules
+rm -rf ~/rc5plus-app
+```
+
+The last line also deletes the CSV copies and backups saved in `~/rc5plus-app`, so copy those somewhere else first if you want to keep them. The installed program's files are in `~/.local/share/rc5plus-app`; delete that folder too if you no longer need them. To remove Bun as well, run `rm -rf ~/.bun`.
+
+### Troubleshooting
+
+| What you see | What to do |
+|---|---|
+| `bun: command not found` | Close the terminal and open a new one. If that doesn't help, run `source ~/.bashrc`, or log out and back in. |
+| `git: command not found` or `curl: command not found` | Step 2 was missed or failed. Run it again. |
+| The browser says it **can't connect** to 127.0.0.1:3005 | The app isn't running. Start it again (step 7) and keep its terminal window open. |
+| The page says **No logger connected** | Check the USB cable is pushed in fully and try another port. Some cables only carry power; use the one that came with the logger. |
+| **Permission denied opening /dev/hidraw…** | The rule from step 5 isn't in use. Repeat step 5, then unplug and replug the logger. |
+| `EADDRINUSE` or **address already in use** when starting | The app is already running in another window or from the menu. Use that one or close it. Or run a second copy on another port with `PORT=3006 bun start` and go to http://127.0.0.1:3006. |
+| **Reset logger…** is greyed out | The logger is still recording. Unplug it, hold its stop button until the display shows "Stop", and plug it back in (see [First run on a real logger](#first-run-on-a-real-logger)). |
+| No PDF is listed | The logger only makes the PDF after it has been stopped. Its USB drive may also need mounting: open the Dolphin file manager and click the logger's drive in the left panel, then refresh the page. |
+| **Busy**: another program is using the logger | Only one program can talk to the logger at a time. Close the other one (for example `bun run dump`, or a second copy of the app) and try again. |
+
+## Quick install (experienced users)
 
 Run these on the Linux PC the logger plugs into:
 
 ```bash
+git clone https://github.com/HamptonNorth/rc5plus.git rc5plus-app
 cd rc5plus-app
 bun install
 
