@@ -1,12 +1,12 @@
 <!--
   File:    README.md
-  Version: 1.7.1
+  Version: 1.8.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
 # rc5plus-app
 
-A Bun + Hono web app for the **Elitech RC-5+** USB temperature logger on Linux. No ElitechLog, Windows VM or Python needed.
+A Bun web app for the **Elitech RC-5+** USB temperature logger on Linux. No ElitechLog, Windows VM or Python needed, and no third-party libraries: just Bun.
 
 - Detects a connected RC-5+ and shows its serial number and status
 - Resets the logger for a new trip: sets the logging interval (1–15 minutes), the description and trip number printed on its reports, and the clock, and erases the stored readings. The RC-5+ only accepts new settings together with an erase, so these are one action.
@@ -18,7 +18,7 @@ The HID protocol is a JavaScript port of [python-elitech](https://github.com/pas
 ## Requirements
 
 - Linux. The app uses `/dev/hidraw*` and `/sys`.
-- Bun 1.1 or newer (only to run from source or build the binary)
+- Bun 1.2.3 or newer (only to run from source or build the binary)
 - `udisks2` (`udisksctl`), which is standard on Kubuntu/KDE. It's only used to mount the PDF drive if the desktop hasn't already mounted it.
 
 ## Step-by-step installation (for beginners)
@@ -83,10 +83,9 @@ This puts the app in a folder called `rc5plus-app` in your home folder:
 cd ~
 git clone https://github.com/HamptonNorth/rc5plus.git rc5plus-app
 cd rc5plus-app
-bun install
 ```
 
-`bun install` downloads the one library the app uses (Hono). It takes a few seconds and should finish without any `error` lines.
+The app needs nothing else: it uses only Bun's built-in features, so there are no extra libraries to download.
 
 ### 5. Let your user account use the logger
 
@@ -172,7 +171,6 @@ The installed program saves its files in a different place from step 7: CSV copi
 ```bash
 cd ~/rc5plus-app
 git pull
-bun install
 ```
 
 If you did step 8, also rebuild the program and copy it again:
@@ -212,8 +210,7 @@ Run these on the Linux PC the logger plugs into:
 
 ```bash
 git clone https://github.com/HamptonNorth/rc5plus.git rc5plus-app
-cd rc5plus-app
-bun install
+cd rc5plus-app            # no dependencies, so no `bun install`
 
 # Allow your desktop user to talk to the logger without sudo
 sudo cp 60-elitech-rc5plus.rules /etc/udev/rules.d/
@@ -248,10 +245,9 @@ The API controls hardware and has no authentication, so it binds to localhost on
 
 ## Compiled binary
 
-`bun run build` makes a single executable, `dist/rc5plus-app`, that includes Bun itself and the web UI. The PC it runs on doesn't need Bun, the source or `node_modules`; it still needs the udev rule and `udisks2`.
+`bun run build` makes a single executable, `dist/rc5plus-app`, that includes Bun itself and the web UI. The PC it runs on doesn't need Bun or the source; it still needs the udev rule and `udisks2`.
 
 ```bash
-bun install
 bun run build                     # dist/rc5plus-app (about 105 MB) for this PC's CPU
 bun run build:arm64               # dist/rc5plus-app-arm64, e.g. for a Raspberry Pi
 install -m 755 dist/rc5plus-app ~/.local/bin/
@@ -280,7 +276,7 @@ If anything misbehaves, the app reports the logger's error. ElitechLog in a Wind
 ## How it works
 
 ```
-Browser ──HTTP──▶ Hono (src/server.js)
+Browser ──HTTP──▶ Bun.serve routes (src/app.js, started by src/server.js)
                     │
                     ├─ LoggerService ── one HID session at a time
                     │     └─ Rc5Plus ── readInfo / resetForNewTrip / readRecords

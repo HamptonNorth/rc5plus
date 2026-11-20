@@ -1,6 +1,6 @@
 <!--
   File:    CLAUDE.md
-  Version: 1.7.0
+  Version: 1.8.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   Purpose: Handover context for Claude Code (Zed agent panel / CLI)
 -->
@@ -9,7 +9,7 @@
 
 ## What this is
 
-A Bun + Hono web app for one device only: the **Elitech RC-5+** USB temperature logger (VID `04d8`, PID `3005`). It runs on Linux and talks to the logger directly through `/dev/hidrawN`, with no ElitechLog, Windows VM or Python. The UI binds to `127.0.0.1:3005`.
+A Bun web app (no dependencies) for one device only: the **Elitech RC-5+** USB temperature logger (VID `04d8`, PID `3005`). It runs on Linux and talks to the logger directly through `/dev/hidrawN`, with no ElitechLog, Windows VM or Python. The UI binds to `127.0.0.1:3005`.
 
 Features:
 1. Detect the logger and show its serial number and status
@@ -19,8 +19,8 @@ Features:
 
 ## Status
 
-- v1.7.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
-- 290 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
+- v1.8.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
+- 313 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
 - Hardware verification checklist (README "First run on a real logger"):
   - [x] Serial number and record count match the logger and the PDF (2026-11-18)
   - [x] CSV rows match the logger's own CSV report exactly (2026-11-18, 4 rows)
@@ -37,7 +37,6 @@ Features:
 ## Commands
 
 ```bash
-bun install
 bun start            # real hardware, http://127.0.0.1:3005
 bun run dev          # --watch
 bun run mock         # RC5_MOCK=1, simulated logger, no hardware needed
@@ -55,7 +54,8 @@ udev: `60-elitech-rc5plus.rules` → `/etc/udev/rules.d/`, using `TAG+="uaccess"
 
 ```
 src/
-  server.js                 Hono routes + static UI, error → HTTP mapping
+  server.js                 CLI options, env, Bun.serve() with app.js
+  app.js                    createApp(): Bun.serve routes (API + embedded UI), 404/405 fallback, errorResponse()
   elitech/
     constants.js            VID/PID, report size, op codes, limits
     frame.js                buildFrame / parseResponse (strict validation)
@@ -83,6 +83,7 @@ test/
   rc5plus.test.js           high-level ops + CSV against the simulator
   dump.test.js              read-only guard, dump, redaction, diff, device lock
   paths.test.js             data directory choice, embedded UI file list
+  server.test.js            HTTP layer on a real Bun.serve (port 0) against the simulator; error mapping
 60-elitech-rc5plus.rules    udev rule
 ```
 
@@ -97,7 +98,7 @@ test/
 | GET | `/api/pdfs` | `{ mountPoint, files[], reason? }` |
 | GET | `/api/pdfs/:name` | `?download=1` for attachment. The name must be in the listing (prevents path traversal) |
 
-Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, another program holds the device lock), NotStopped → 409 (`NOT_STOPPED`), NotApplied → 502 (`NOT_APPLIED`), RangeError → 400, Transport EACCES → 403, other Transport errors → 503, FrameError → 502.
+Error mapping in `app.js` (`errorResponse`): NotConnected → 404, DeviceBusy → 423 (`BUSY`, another program holds the device lock), NotStopped → 409 (`NOT_STOPPED`), NotApplied → 502 (`NOT_APPLIED`), RangeError → 400, Transport EACCES → 403, other Transport errors → 503, FrameError → 502.
 
 ## Protocol (from python-elitech)
 
@@ -182,11 +183,11 @@ Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, 
 - `RC5_MOCK_STATE=recording` (or `ready`) starts the simulator in that state, to try out the state checks. The simulator holds writes until a Format, like the hardware.
 - References: python-elitech issue #1 (RC-5+ writes ignored), PRs #12–#14 by honx (full config write, reset sequence, `doc/RC-5.md` protocol notes from the official software).
 - Interval changes take effect from the next recording start.
-- Bun's `serveStatic` root is resolved relative to cwd. `server.js` computes it from `import.meta.dir`, so `bun start` works from any directory.
+- No HTTP framework (Hono removed in v1.8.0, user's decision 2026-11-20): Bun.serve's built-in `routes` (Bun ≥ 1.2.3). `req.params` arrive URL-decoded; a method missing from a route's `{ GET, POST }` object falls through to `fetch`, which answers 405 with `Allow`; errors thrown in a handler go to `error` → `errorResponse()`. Keep it dependency-free unless told otherwise.
 
 ## Possible next steps
 
 - Show a chart of readings in the UI (data is already available from `readRecords`)
 - Start mode / start delay controls (`0x20` bits 0..2, `0x40`)
 - Alarm thresholds (offsets not yet mapped in `parameters.js`; see the upstream table)
-- Optional SQLite archive of exports per serial number (matches the usual Bun + Hono + SQLite stack)
+- Optional SQLite archive of exports per serial number (`bun:sqlite`, built in)
