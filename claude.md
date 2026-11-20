@@ -1,6 +1,6 @@
 <!--
   File:    CLAUDE.md
-  Version: 1.6.0
+  Version: 1.7.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
   Purpose: Handover context for Claude Code (Zed agent panel / CLI)
 -->
@@ -19,8 +19,8 @@ Features:
 
 ## Status
 
-- v1.4.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
-- 270 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
+- v1.7.0. Confirmed to run on the developer's Linux PC. Test logger: RC-5+, firmware `0x57` (V5.7), protocol `0x38`.
+- 290 tests pass (`bun test`). The protocol is checked byte for byte against vectors generated from python-elitech.
 - Hardware verification checklist (README "First run on a real logger"):
   - [x] Serial number and record count match the logger and the PDF (2026-11-18)
   - [x] CSV rows match the logger's own CSV report exactly (2026-11-18, 4 rows)
@@ -43,10 +43,11 @@ bun run dev          # --watch
 bun run mock         # RC5_MOCK=1, simulated logger, no hardware needed
 bun test             # protocol vectors + simulator tests
 bun run vectors      # regenerate test/vectors.json (needs ../python-elitech clone)
+bun run build        # single executable dist/rc5plus-app (build:arm64 for ARM)
 bun run dump         # read-only diagnostic snapshot (--save --shadow --records[=N] --redact --watch[=S] --diff A B)
 ```
 
-Env: `PORT` (3005), `HOST` (127.0.0.1), `RC5_MOCK=1`, `RC5_MOCK_STATE=recording|ready`.
+Env: `PORT` (3005), `HOST` (127.0.0.1), `RC5_MOCK=1`, `RC5_MOCK_STATE=recording|ready`, `RC5_DATA_DIR` (exports/ and dumps/; default repo root from source, `~/.local/share/rc5plus-app` compiled).
 
 udev: `60-elitech-rc5plus.rules` → `/etc/udev/rules.d/`, using `TAG+="uaccess"`. Without it, opening the device fails with an EACCES error and the API returns 403.
 
@@ -69,6 +70,8 @@ src/
     csv.js                  RFC 4180 CSV, file naming
     device-lock.js          cross-process lock file for the hidraw node (server + dump)
     dump.js                 read-only snapshot, field table, redaction, diff, text output
+    paths.js                data directory (repo root / XDG for the binary / RC5_DATA_DIR)
+    static-assets.js        public/ files imported `with { type: "file" }` so --compile embeds them
 scripts/
   dump.js                   `bun run dump` CLI (read-only; takes the device lock)
   restore.js                `bun run restore` CLI: settings from a saved dump; dry run unless --write
@@ -79,6 +82,7 @@ test/
   protocol.test.js          JS port vs python-elitech
   rc5plus.test.js           high-level ops + CSV against the simulator
   dump.test.js              read-only guard, dump, redaction, diff, device lock
+  paths.test.js             data directory choice, embedded UI file list
 60-elitech-rc5plus.rules    udev rule
 ```
 
@@ -143,6 +147,7 @@ Error mapping in `server.js`: NotConnected → 404, DeviceBusy → 423 (`BUSY`, 
 - **Localhost only.** There is no auth, so don't default to `0.0.0.0`.
 - Plain JavaScript (ESM) with JSDoc, not TypeScript. Vanilla front end, no framework or build step.
 - Linux only (`"os": ["linux"]`).
+- **Compiled binary** (`bun run build`, v1.7.0): `bun build --compile`. Inside it `import.meta.dir` is `/$bunfs/root`, so nothing may locate files relative to the source tree: data paths come from `resolveDataDir()`, and the UI is served only from `STATIC_ASSETS` (a new file in `public/` must be added there; a test checks the list matches the folder). Bun's development mode is off in the binary. dump/restore are not included.
 
 ## Conventions
 

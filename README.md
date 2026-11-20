@@ -1,6 +1,6 @@
 <!--
   File:    README.md
-  Version: 1.6.1
+  Version: 1.7.0
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
@@ -54,10 +54,30 @@ bun start                 # http://127.0.0.1:3005
 | `bun run dev` | Same, restarting on file changes |
 | `bun run mock` | Run against a built-in simulated RC-5+ (no hardware needed) |
 | `bun test` | Run the protocol and simulator tests |
+| `bun run build` | Build the single-file executable (see below) |
 
-Environment variables: `PORT` (default `3005`), `HOST` (default `127.0.0.1`), `RC5_MOCK=1` (simulator).
+Environment variables: `PORT` (default `3005`), `HOST` (default `127.0.0.1`), `RC5_MOCK=1` (simulator), `RC5_DATA_DIR` (where `exports/` and `dumps/` go).
 
 The API controls hardware and has no authentication, so it binds to localhost only. Don't set `HOST=0.0.0.0` on an untrusted network.
+
+## Compiled binary
+
+`bun run build` makes a single executable, `dist/rc5plus-app`, that includes Bun itself and the web UI. The PC it runs on doesn't need Bun, the source or `node_modules`; it still needs the udev rule and `udisks2`.
+
+```bash
+bun install
+bun run build                     # dist/rc5plus-app (about 105 MB) for this PC's CPU
+bun run build:arm64               # dist/rc5plus-app-arm64, e.g. for a Raspberry Pi
+install -m 755 dist/rc5plus-app ~/.local/bin/
+
+rc5plus-app                       # http://127.0.0.1:3005
+rc5plus-app --version
+RC5_MOCK=1 rc5plus-app            # simulated logger
+```
+
+It takes the same environment variables as `bun start`. Exports and dumps go to `~/.local/share/rc5plus-app/` (`exports/`, `dumps/`), not the repository. Set `RC5_DATA_DIR` to put them somewhere else; from source it defaults to the repository root as before. The `.map` file next to the binary is only for debugging and doesn't need to be copied.
+
+`bun run dump` and `bun run restore` aren't in the binary; run them from the source tree. To restore from a backup the binary saved, give its full path, for example `bun run restore --template ~/.local/share/rc5plus-app/dumps/<file>.json`.
 
 ## First run on a real logger
 
@@ -167,7 +187,7 @@ This app is based on [python-elitech](https://github.com/pasccom/python-elitech)
 
 Thanks also to the contributors to python-elitech's issues and pull requests, especially **honx** (PRs #12–#14). Those PRs document the official software's full settings write and reset sequence, the "shadow" memory space and the run-state values. They are what made the RC-5+ and RC-5+ TE reset in this app work.
 
-What this app adds was found on real RC-5+ and RC-5+ TE loggers (firmware `0x57`, protocol `0x38`) and is recorded in `CLAUDE.md`:
+What this app adds was found on real RC-5+ and RC-5+ TE loggers (firmware `0x57`, protocol `0x38`). It is written up in [`docs/FINDINGS.md`](docs/FINDINGS.md). The main points:
 - settings only stick after a Format, and the whole settings block must be written first
 - where the real trip times live in shadow memory
 - the live temperature reading at `0x86`

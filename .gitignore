@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Compiled binaries (bun run build)
+dist/
+
 # Exported readings, copies of logger reports and diagnostic dumps
 # (personal data: serial numbers, descriptions, possibly the PDF password)
 exports/
