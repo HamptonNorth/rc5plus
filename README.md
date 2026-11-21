@@ -1,12 +1,14 @@
 <!--
   File:    README.md
-  Version: 1.8.3
+  Version: 1.8.4
   Project: rc5plus-app — Bun web app for the Elitech RC-5+ temperature logger
 -->
 
 # rc5plus-app
 
 A Bun web app for the **Elitech RC-5+** USB temperature logger on Linux. No ElitechLog, Windows VM or Python needed, and no third-party libraries: just Bun.
+
+It works with the **RC-5+** (also written RC-5 plus or RC5+) and the **RC-5+ TE**, the version with an external probe. It is an ElitechLog alternative for Linux, tested on Kubuntu, and should also work on Ubuntu, Linux Mint and other Linux systems.
 
 - Detects a connected RC-5+ and shows its serial number and status
 - Resets the logger for a new trip: sets the logging interval (1–15 minutes), the description and trip number printed on its reports, and the clock, and erases the stored readings. The RC-5+ only accepts new settings together with an erase, so these are one action.
